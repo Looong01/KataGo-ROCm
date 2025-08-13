@@ -36,7 +36,7 @@ endif()
 set(BUILD_DISTRIBUTED 0 CACHE BOOL "Build with http support for contributing to distributed training")
 set(USE_BACKEND CACHE STRING "Neural net backend")
 string(TOUPPER "${USE_BACKEND}" USE_BACKEND)
-set_property(CACHE USE_BACKEND PROPERTY STRINGS "" CUDA TENSORRT OPENCL EIGEN ROCM)
+set_property(CACHE USE_BACKEND PROPERTY STRINGS "" CUDA TENSORRT OPENCL EIGEN ROCM MGX)
 
 set(USE_TCMALLOC 0 CACHE BOOL "Use TCMalloc")
 set(NO_GIT_REVISION 0 CACHE BOOL "Disable embedding the git revision into the compiled exe")
@@ -177,6 +177,13 @@ elseif(USE_BACKEND STREQUAL "ROCM")
 
   # Optional: Enable model-size‑based autotuning and other macros
   # add_compile_definitions(HIP_SUPPORTS_FP16)
+
+elseif(USE_BACKEND STREQUAL "MGX")
+  message(STATUS "-DUSE_BACKEND=MGX, using MIGraphX backend.")
+  set(NEURALNET_BACKEND_SOURCES
+    neuralnet/mgxbackend.cpp
+    neuralnet/mgxconvert.cpp
+  )
 
 elseif(USE_BACKEND STREQUAL "")
   message(WARNING "${ColorBoldRed}WARNING: Using dummy neural net backend, intended for non-neural-net testing only, will fail on any code path requiring a neural net. To use neural net, specify -DUSE_BACKEND=CUDA or -DUSE_BACKEND=TENSORRT or -DUSE_BACKEND=OPENCL or -DUSE_BACKEND=EIGEN to compile with the respective backend.${ColorReset}")
@@ -515,6 +522,10 @@ elseif(USE_BACKEND STREQUAL "ROCM")
     MIOpen
     # roc::miopen          # DNN primitives
   )
+elseif(USE_BACKEND STREQUAL "MGX")
+  target_compile_definitions(katago PRIVATE USE_MGX_BACKEND)
+  find_package(migraphx REQUIRED)
+  target_link_libraries(katago migraphx::migraphx)
 elseif(USE_BACKEND STREQUAL "EIGEN")
   target_compile_definitions(katago PRIVATE USE_EIGEN_BACKEND)
   if(NOT (MSVC))
