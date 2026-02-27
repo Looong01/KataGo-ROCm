@@ -253,6 +253,8 @@ string Version::getKataGoVersionFullInfo() {
 #define STRINGIFY2(x) STRINGIFY(x)
   out << "Compiled with HIP runtime version " << STRINGIFY2(HIP_TARGET_VERSION) << endl;
 #endif
+#elif defined(USE_MIGRAPHX_BACKEND)
+  out << "Using MIGraphX backend" << endl;
 #elif defined(USE_EIGEN_BACKEND)
   out << "Using Eigen(CPU) backend" << endl;
 #else
