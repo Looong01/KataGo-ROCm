@@ -50,6 +50,17 @@ static const int64_t defaultMaxVisits = 800;
 
 static constexpr double defaultSecondsPerGameMove = 5.0;
 static const int ternarySearchInitialMax = 32;
+#ifdef USE_OPENVINO_BACKEND
+static const int openVinoNpuBenchmarkMaxBatchSize = 12;
+#endif
+
+#ifdef USE_OPENVINO_BACKEND
+static bool openVinoDeviceTypeTargetsNPU(ConfigParser& cfg) {
+  string deviceType = cfg.contains("openvinoDeviceType") ? cfg.getString("openvinoDeviceType") : "NPU";
+  string v = Global::toUpper(Global::trim(deviceType));
+  return v.find("NPU") != string::npos;
+}
+#endif
 
 int MainCmds::benchmark(const vector<string>& args) {
   Board::initHash();
@@ -288,6 +299,17 @@ int MainCmds::benchmark(const vector<string>& args) {
     cout << "For ONNX Runtime multi-GPU, use numNNServerThreadsPerModel + onnxDeviceToUseThreadX." << endl;
   }
 #endif
+#ifdef USE_OPENVINO_BACKEND
+  cout << "You are currently using the native OpenVINO version of KataGo." << endl;
+  string openvinoDeviceType = cfg.contains("openvinoDeviceType") ? cfg.getString("openvinoDeviceType") : "NPU";
+  cout << "Your GTP config is currently set to openvinoDeviceType = " << openvinoDeviceType << endl;
+  if(cfg.contains("openvinoDeviceId"))
+    cout << "openvinoDeviceId = " << cfg.getString("openvinoDeviceId") << endl;
+  if(cfg.contains("openvinoPerformanceMode"))
+    cout << "openvinoPerformanceMode = " << cfg.getString("openvinoPerformanceMode") << endl;
+  cout << "For Intel NPU, openvinoDeviceType = NPU is usually recommended." << endl;
+  cout << "OpenVINO/NPU usually uses a single device; openvinoDeviceToUseThread* is optional." << endl;
+#endif
   cout << endl;
   cout << "Your GTP config is currently set to use numSearchThreads = " << params.numThreads << endl;
 
@@ -342,7 +364,22 @@ static void warmStartNNEval(const CompactSgf& sgf, Logger& logger, const SearchP
 
 static NNEvaluator* createNNEval(int maxNumThreads, const CompactSgf& sgf, const string& modelFile, Logger& logger, ConfigParser& cfg, const SearchParams& params) {
   int expectedConcurrentEvals = maxNumThreads;
-  const int defaultMaxBatchSize = std::max(8,((maxNumThreads+3)/4)*4);
+  int defaultMaxBatchSize = std::max(8,((maxNumThreads+3)/4)*4);
+
+#ifdef USE_OPENVINO_BACKEND
+  if(
+    openVinoDeviceTypeTargetsNPU(cfg) &&
+    defaultMaxBatchSize > openVinoNpuBenchmarkMaxBatchSize
+  ) {
+    logger.write(
+      "OpenVINO benchmark: clamping nnMaxBatchSize from " +
+      Global::intToString(defaultMaxBatchSize) + " to " +
+      Global::intToString(openVinoNpuBenchmarkMaxBatchSize) +
+      " for NPU stability"
+    );
+    defaultMaxBatchSize = openVinoNpuBenchmarkMaxBatchSize;
+  }
+#endif
 
   Rand seedRand;
 
@@ -656,6 +693,9 @@ int MainCmds::genconfig(const vector<string>& args, const string& firstCommand) 
 #ifdef USE_ONNX_BACKEND
   string configOnnxProvider = "openvino";
 #endif
+#ifdef USE_OPENVINO_BACKEND
+  string configOpenVINODeviceType = "NPU";
+#endif
 
   cout << endl;
   cout << "=========================================================================" << endl;
@@ -804,6 +844,20 @@ int MainCmds::genconfig(const vector<string>& args, const string& firstCommand) 
       });
   }
 #endif
+#ifdef USE_OPENVINO_BACKEND
+  {
+    cout << endl;
+    string prompt =
+      "Select OpenVINO target device type in generated config\n"
+      "(NPU, CPU, GPU, AUTO, AUTO:NPU,CPU, etc), default NPU:\n";
+    promptAndParseInput(prompt, [&](const string& line) {
+        string v = Global::trim(line);
+        if(v == "")
+          v = "NPU";
+        configOpenVINODeviceType = v;
+      });
+  }
+#endif
 
   cout << endl;
   cout << "=========================================================================" << endl;
@@ -818,6 +872,9 @@ int MainCmds::genconfig(const vector<string>& args, const string& firstCommand) 
       configOnnxProvider == "tensorrt" ||
       configOnnxProvider == "migraphx";
     askForDeviceIdxs = onnxProviderSupportsThreadDeviceMap;
+#endif
+#ifdef USE_OPENVINO_BACKEND
+    askForDeviceIdxs = false;
 #endif
     if(askForDeviceIdxs) {
       cout << endl;
@@ -844,6 +901,13 @@ int MainCmds::genconfig(const vector<string>& args, const string& firstCommand) 
       cout << endl;
       cout << "onnxProvider = " << configOnnxProvider << " selected." << endl;
       cout << "Skipping per-thread multi-device mapping (mainly used by cuda/tensorrt/migraphx providers)." << endl;
+      configDeviceIdxs.clear();
+    }
+#elif defined(USE_OPENVINO_BACKEND)
+    else {
+      cout << endl;
+      cout << "openvinoDeviceType = " << configOpenVINODeviceType << " selected." << endl;
+      cout << "Skipping per-thread multi-device mapping for generated config." << endl;
       configDeviceIdxs.clear();
     }
 #endif
@@ -927,6 +991,18 @@ int MainCmds::genconfig(const vector<string>& args, const string& firstCommand) 
       ,configOnnxProvider
 #endif
     );
+#ifdef USE_OPENVINO_BACKEND
+    if(configOpenVINODeviceType != "NPU") {
+      size_t pos = configFileContents.find("openvinoDeviceType = NPU");
+      if(pos != string::npos) {
+        configFileContents.replace(
+          pos,
+          string("openvinoDeviceType = NPU").size(),
+          "openvinoDeviceType = " + configOpenVINODeviceType
+        );
+      }
+    }
+#endif
   };
   updateConfigContents();
 

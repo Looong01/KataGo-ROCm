@@ -280,7 +280,11 @@ nnCacheSizePowerOfTwo = $$NN_CACHE_SIZE_POWER_OF_TWO
 # Size of mutex pool for nnCache is (2 ** this).
 nnMutexPoolSizePowerOfTwo = $$NN_MUTEX_POOL_SIZE_POWER_OF_TWO
 
+# ONNX backend provider (ignored by non-ONNX backends)
 $$ONNX_PROVIDER
+
+# OpenVINO backend options (ignored by non-OpenVINO backends)
+$$OPENVINO_OPTIONS
 
 $$MULTIPLE_GPUS
 
@@ -531,6 +535,20 @@ string GTPConfig::makeConfig(
   replace("$$ONNX_PROVIDER", "");
 #endif
 
+#ifdef USE_OPENVINO_BACKEND
+  replace(
+    "$$OPENVINO_OPTIONS",
+    "openvinoDeviceType = NPU\n"
+    "# openvinoDeviceId = 0\n"
+    "# openvinoEnableNPUFastCompile = true\n"
+    "# openvinoCacheDir = C:\\\\temp\\\\katago_ov_cache\n"
+    "# openvinoNumStreams = 1\n"
+    "# openvinoPerformanceMode = LATENCY  # LATENCY / THROUGHPUT / CUMULATIVE_THROUGHPUT"
+  );
+#else
+  replace("$$OPENVINO_OPTIONS", "");
+#endif
+
   if(deviceIdxs.size() <= 0) {
     replace("$$MULTIPLE_GPUS", "");
   }
@@ -556,6 +574,9 @@ string GTPConfig::makeConfig(
 #endif
 #ifdef USE_ROCM_BACKEND
       replacement += "rocmDeviceToUseThread" + Global::intToString(i) + " = " + Global::intToString(deviceIdxs[i]) + "\n";
+#endif
+#ifdef USE_OPENVINO_BACKEND
+      replacement += "openvinoDeviceToUseThread" + Global::intToString(i) + " = " + Global::intToString(deviceIdxs[i]) + "\n";
 #endif
 #ifdef USE_ONNX_BACKEND
       if(onnxProviderSupportsThreadDeviceMap)

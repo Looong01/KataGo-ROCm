@@ -256,6 +256,8 @@ string Version::getKataGoVersionFullInfo() {
 #define STRINGIFY2(x) STRINGIFY(x)
   out << "Compiled with HIP runtime version " << STRINGIFY2(HIP_TARGET_VERSION) << endl;
 #endif
+#elif defined(USE_OPENVINO_BACKEND)
+  out << "Using OpenVINO backend" << endl;
 #elif defined(USE_EIGEN_BACKEND)
   out << "Using Eigen(CPU) backend" << endl;
 #elif defined(USE_ONNX_BACKEND)
@@ -296,6 +298,8 @@ string Version::getGitRevisionWithBackend() {
   s += "-metal";
 #elif defined(USE_OPENCL_BACKEND)
   s += "-opencl";
+#elif defined(USE_OPENVINO_BACKEND)
+  s += "-openvino";
 #elif defined(USE_EIGEN_BACKEND)
   s += "-eigen";
 #elif defined(USE_ONNX_BACKEND)

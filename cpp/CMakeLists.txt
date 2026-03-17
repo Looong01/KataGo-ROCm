@@ -48,7 +48,7 @@ endif()
 set(BUILD_DISTRIBUTED 0 CACHE BOOL "Build with http support for contributing to distributed training")
 set(USE_BACKEND CACHE STRING "Neural net backend")
 string(TOUPPER "${USE_BACKEND}" USE_BACKEND)
-set_property(CACHE USE_BACKEND PROPERTY STRINGS "" CUDA TENSORRT OPENCL EIGEN ROCM ONNX)
+set_property(CACHE USE_BACKEND PROPERTY STRINGS "" CUDA TENSORRT OPENCL EIGEN ROCM ONNX OPENVINO)
 
 set(USE_TCMALLOC 0 CACHE BOOL "Use TCMalloc")
 set(NO_GIT_REVISION 0 CACHE BOOL "Disable embedding the git revision into the compiled exe")
@@ -268,6 +268,11 @@ elseif(USE_BACKEND STREQUAL "ONNX")
     neuralnet/onnxbackend.cpp
     neuralnet/onnxmodelbuilder.cpp
     )
+elseif(USE_BACKEND STREQUAL "OPENVINO")
+  message(STATUS "-DUSE_BACKEND=OPENVINO, using OpenVINO Runtime backend.")
+  set(NEURALNET_BACKEND_SOURCES
+    neuralnet/openvinobackend.cpp
+    )
 # --------------------------- ROCM backend（AMD GPU / HIP  MIOpen） ---------------------------
 elseif(USE_BACKEND STREQUAL "ROCM")
   message(STATUS "-DUSE_BACKEND=ROCM, using AMD ROCm backend.")
@@ -314,7 +319,7 @@ elseif(USE_BACKEND STREQUAL "ROCM")
   # add_compile_definitions(HIP_SUPPORTS_FP16)
 
 elseif(USE_BACKEND STREQUAL "")
-  message(WARNING "${ColorBoldRed}WARNING: Using dummy neural net backend, intended for non-neural-net testing only, will fail on any code path requiring a neural net. To use neural net, specify -DUSE_BACKEND=CUDA or -DUSE_BACKEND=TENSORRT or -DUSE_BACKEND=OPENCL or -DUSE_BACKEND=EIGEN or -DUSE_BACKEND=ONNX to compile with the respective backend.${ColorReset}")
+  message(WARNING "${ColorBoldRed}WARNING: Using dummy neural net backend, intended for non-neural-net testing only, will fail on any code path requiring a neural net. To use neural net, specify -DUSE_BACKEND=CUDA or -DUSE_BACKEND=TENSORRT or -DUSE_BACKEND=OPENCL or -DUSE_BACKEND=EIGEN or -DUSE_BACKEND=ONNX or -DUSE_BACKEND=OPENVINO to compile with the respective backend.${ColorReset}")
   set(NEURALNET_BACKEND_SOURCES neuralnet/dummybackend.cpp)
 else()
   message(FATAL_ERROR "Unrecognized backend: " ${USE_BACKEND})
@@ -707,6 +712,37 @@ elseif(USE_BACKEND STREQUAL "ROCM")
     roc::hipblas         # BLAS
     ${_miopen_target}    # DNN primitives
   )
+elseif(USE_BACKEND STREQUAL "OPENVINO")
+  target_compile_definitions(katago PRIVATE USE_OPENVINO_BACKEND)
+
+  if(WIN32)
+    # Auto-detect OpenVINO runtime installed under:
+    #   C:/Program Files (x86)/Intel/openvino_<version>/runtime
+    file(GLOB _openvino_runtime_candidates LIST_DIRECTORIES true
+      "C:/Program Files (x86)/Intel/openvino*/runtime"
+    )
+    list(SORT _openvino_runtime_candidates COMPARE NATURAL ORDER DESCENDING)
+    if(_openvino_runtime_candidates)
+      list(GET _openvino_runtime_candidates 0 _openvino_default_root)
+    else()
+      set(_openvino_default_root "")
+    endif()
+  else()
+    # On Linux/macOS, rely on default CMake package search paths
+    # (e.g. system package manager install locations).
+    set(_openvino_default_root "")
+  endif()
+  set(OPENVINO_ROOT "${_openvino_default_root}" CACHE PATH "Path to OpenVINO runtime root (optional, leave empty for automatic package search)")
+
+  if(OPENVINO_ROOT)
+    if(EXISTS "${OPENVINO_ROOT}/cmake/OpenVINOConfig.cmake")
+      list(APPEND CMAKE_PREFIX_PATH "${OPENVINO_ROOT}/cmake")
+    endif()
+    list(APPEND CMAKE_PREFIX_PATH "${OPENVINO_ROOT}")
+  endif()
+
+  find_package(OpenVINO REQUIRED COMPONENTS Runtime CONFIG)
+  target_link_libraries(katago openvino::runtime)
 elseif(USE_BACKEND STREQUAL "ONNX")
   target_compile_definitions(katago PRIVATE USE_ONNX_BACKEND)
 
@@ -1038,4 +1074,3 @@ elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "C
 endif()
 
 target_include_directories(katago PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
-

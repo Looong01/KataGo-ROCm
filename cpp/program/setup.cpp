@@ -20,6 +20,7 @@ std::vector<std::string> Setup::getBackendPrefixes() {
   prefixes.push_back("metal");
   prefixes.push_back("opencl");
   prefixes.push_back("rocm");
+  prefixes.push_back("openvino");
   prefixes.push_back("eigen");
   prefixes.push_back("onnx");
   prefixes.push_back("dummybackend");
@@ -90,6 +91,8 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
   string backendPrefix = "opencl";
   #elif defined(USE_ROCM_BACKEND)
   string backendPrefix = "rocm";
+  #elif defined(USE_OPENVINO_BACKEND)
+  string backendPrefix = "openvino";
   #elif defined(USE_ONNX_BACKEND)
   string backendPrefix = "onnx";
   #elif defined(USE_EIGEN_BACKEND)
@@ -162,7 +165,7 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
         requireExactNNLen = cfg.getBool("requireMaxBoardSize");
     }
 
-    bool inputsUseNHWC = backendPrefix == "opencl" || backendPrefix == "trt" || backendPrefix == "metal" || backendPrefix == "rocm" || backendPrefix == "onnx" ? false : true;
+    bool inputsUseNHWC = backendPrefix == "opencl" || backendPrefix == "trt" || backendPrefix == "metal" || backendPrefix == "rocm" || backendPrefix == "openvino" || backendPrefix == "onnx" ? false : true;
     if(cfg.contains(backendPrefix+"InputsUseNHWC"+idxStr))
       inputsUseNHWC = cfg.getBool(backendPrefix+"InputsUseNHWC"+idxStr);
     else if(cfg.contains("inputsUseNHWC"+idxStr))
@@ -198,6 +201,53 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
     int numNNServerThreadsPerModel =
       cfg.contains("numEigenThreadsPerModel") ? cfg.getInt("numEigenThreadsPerModel",1,1024) :
       computeDefaultEigenBackendThreads(expectedConcurrentEvals,logger);
+#endif
+
+#if defined(USE_OPENVINO_BACKEND)
+    auto openvinoDeviceTypeContainsGPU = [](const string& deviceType) {
+      return Global::toUpper(Global::trim(deviceType)).find("GPU") != string::npos;
+    };
+    string openvinoDeviceType =
+      cfg.contains("openvinoDeviceType") ? cfg.getString("openvinoDeviceType") : "NPU";
+    bool openvinoAllowsExplicitGpuSelection = openvinoDeviceTypeContainsGPU(openvinoDeviceType);
+    if(!openvinoAllowsExplicitGpuSelection) {
+      auto throwIfContains = [&](const string& key) {
+        if(cfg.contains(key)) {
+          throw StringError(
+            "Config key '" + key + "' is only supported when openvinoDeviceType targets GPU. "
+            "Current openvinoDeviceType = '" + openvinoDeviceType + "'."
+          );
+        }
+      };
+
+      if(cfg.contains("openvinoDeviceId") && !Global::trim(cfg.getString("openvinoDeviceId")).empty()) {
+        throw StringError(
+          "Config key 'openvinoDeviceId' is only supported when openvinoDeviceType targets GPU. "
+          "Current openvinoDeviceType = '" + openvinoDeviceType + "'."
+        );
+      }
+
+      // Explicit device/thread mapping is GPU-only.
+      throwIfContains("openvinoDeviceToUse");
+      throwIfContains("openvinoGpuToUse");
+      throwIfContains("openvinoDeviceToUseModel" + idxStr);
+      throwIfContains("openvinoGpuToUseModel" + idxStr);
+      throwIfContains("deviceToUse");
+      throwIfContains("gpuToUse");
+      throwIfContains("deviceToUseModel" + idxStr);
+      throwIfContains("gpuToUseModel" + idxStr);
+      for(int j = 0; j<numNNServerThreadsPerModel; j++) {
+        string threadIdxStr = Global::intToString(j);
+        throwIfContains("openvinoDeviceToUseThread" + threadIdxStr);
+        throwIfContains("openvinoGpuToUseThread" + threadIdxStr);
+        throwIfContains("openvinoDeviceToUseModel" + idxStr + "Thread" + threadIdxStr);
+        throwIfContains("openvinoGpuToUseModel" + idxStr + "Thread" + threadIdxStr);
+        throwIfContains("deviceToUseThread" + threadIdxStr);
+        throwIfContains("gpuToUseThread" + threadIdxStr);
+        throwIfContains("deviceToUseModel" + idxStr + "Thread" + threadIdxStr);
+        throwIfContains("gpuToUseModel" + idxStr + "Thread" + threadIdxStr);
+      }
+    }
 #endif
 
     vector<int> gpuIdxByServerThread;
@@ -269,6 +319,19 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
       backendExtraParam += ";openvinoEnableNPUFastCompile=" + cfg.getString("onnxOpenVINOEnableNPUFastCompile");
     if(cfg.contains("onnxOpenVINOCacheDir"))
       backendExtraParam += ";openvinoCacheDir=" + cfg.getString("onnxOpenVINOCacheDir");
+#elif defined(USE_OPENVINO_BACKEND)
+    if(cfg.contains("openvinoDeviceType"))
+      backendExtraParam += ";openvinoDeviceType=" + cfg.getString("openvinoDeviceType");
+    if(cfg.contains("openvinoDeviceId"))
+      backendExtraParam += ";openvinoDeviceId=" + cfg.getString("openvinoDeviceId");
+    if(cfg.contains("openvinoEnableNPUFastCompile"))
+      backendExtraParam += ";openvinoEnableNPUFastCompile=" + cfg.getString("openvinoEnableNPUFastCompile");
+    if(cfg.contains("openvinoCacheDir"))
+      backendExtraParam += ";openvinoCacheDir=" + cfg.getString("openvinoCacheDir");
+    if(cfg.contains("openvinoNumStreams"))
+      backendExtraParam += ";numStreams=" + cfg.getString("openvinoNumStreams");
+    if(cfg.contains("openvinoPerformanceMode"))
+      backendExtraParam += ";performanceMode=" + cfg.getString("openvinoPerformanceMode");
 #else
     if(cfg.contains("openclTunerFile"))
       backendExtraParam = cfg.getString("openclTunerFile");
