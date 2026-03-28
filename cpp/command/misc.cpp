@@ -14,7 +14,7 @@
 #include "../program/playutils.h"
 #include "../program/play.h"
 #include "../neuralnet/nninterface.h"
-#ifdef USE_ONNX_BACKEND
+#if defined(USE_ONNX_BACKEND) || defined(USE_WINML_BACKEND)
 #include "../neuralnet/onnxmodelbuilder.h"
 #endif
 #include "../command/commandline.h"
@@ -41,9 +41,9 @@ int MainCmds::printclockinfo(const vector<string>& args) {
 }
 
 int MainCmds::exportonnx(const vector<string>& args) {
-#ifndef USE_ONNX_BACKEND
+#if !defined(USE_ONNX_BACKEND) && !defined(USE_WINML_BACKEND)
   (void)args;
-  cerr << "exportonnx is only available in ONNX backend builds (USE_BACKEND=ONNX)." << endl;
+  cerr << "exportonnx is only available in ONNX or WinML backend builds." << endl;
   return 1;
 #else
   string modelFile;

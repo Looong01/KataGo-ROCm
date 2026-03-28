@@ -22,6 +22,7 @@ std::vector<std::string> Setup::getBackendPrefixes() {
   prefixes.push_back("rocm");
   prefixes.push_back("eigen");
   prefixes.push_back("onnx");
+  prefixes.push_back("winml");
   prefixes.push_back("dummybackend");
   return prefixes;
 }
@@ -92,6 +93,8 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
   string backendPrefix = "rocm";
   #elif defined(USE_ONNX_BACKEND)
   string backendPrefix = "onnx";
+  #elif defined(USE_WINML_BACKEND)
+  string backendPrefix = "winml";
   #elif defined(USE_EIGEN_BACKEND)
   string backendPrefix = "eigen";
   #else
@@ -107,6 +110,20 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
         throw StringError(
           "Config key '" + key + "' requires ONNX backend, but this executable is not built with USE_BACKEND=ONNX. "
           "Remove onnx* settings or rebuild with -DUSE_BACKEND=ONNX."
+        );
+      }
+    }
+  }
+#endif
+#if !defined(USE_WINML_BACKEND)
+  // In non-WINML builds, fail fast on any WinML-specific config instead of silently ignoring it.
+  {
+    const vector<string> allKeys = cfg.unusedKeys();
+    for(const string& key : allKeys) {
+      if(Global::isPrefix(Global::toLower(key),"winml")) {
+        throw StringError(
+          "Config key '" + key + "' requires WinML backend, but this executable is not built with USE_BACKEND=WINML. "
+          "Remove winml* settings or rebuild with -DUSE_BACKEND=WINML."
         );
       }
     }
@@ -162,7 +179,7 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
         requireExactNNLen = cfg.getBool("requireMaxBoardSize");
     }
 
-    bool inputsUseNHWC = backendPrefix == "opencl" || backendPrefix == "trt" || backendPrefix == "metal" || backendPrefix == "rocm" || backendPrefix == "onnx" ? false : true;
+    bool inputsUseNHWC = backendPrefix == "opencl" || backendPrefix == "trt" || backendPrefix == "metal" || backendPrefix == "rocm" || backendPrefix == "onnx" || backendPrefix == "winml" ? false : true;
     if(cfg.contains(backendPrefix+"InputsUseNHWC"+idxStr))
       inputsUseNHWC = cfg.getBool(backendPrefix+"InputsUseNHWC"+idxStr);
     else if(cfg.contains("inputsUseNHWC"+idxStr))
@@ -269,6 +286,33 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
       backendExtraParam += ";openvinoEnableNPUFastCompile=" + cfg.getString("onnxOpenVINOEnableNPUFastCompile");
     if(cfg.contains("onnxOpenVINOCacheDir"))
       backendExtraParam += ";openvinoCacheDir=" + cfg.getString("onnxOpenVINOCacheDir");
+#elif defined(USE_WINML_BACKEND)
+    string winmlProvider = cfg.contains("winmlProvider") ? cfg.getString("winmlProvider") : "dml";
+    backendExtraParam = "provider=" + winmlProvider;
+    if(cfg.contains("winmlInputSpatial"))
+      backendExtraParam += ";inputSpatial=" + cfg.getString("winmlInputSpatial");
+    if(cfg.contains("winmlInputGlobal"))
+      backendExtraParam += ";inputGlobal=" + cfg.getString("winmlInputGlobal");
+    if(cfg.contains("winmlInputMeta"))
+      backendExtraParam += ";inputMeta=" + cfg.getString("winmlInputMeta");
+    if(cfg.contains("winmlOutputPolicy"))
+      backendExtraParam += ";outputPolicy=" + cfg.getString("winmlOutputPolicy");
+    if(cfg.contains("winmlOutputValue"))
+      backendExtraParam += ";outputValue=" + cfg.getString("winmlOutputValue");
+    if(cfg.contains("winmlOutputMiscvalue"))
+      backendExtraParam += ";outputMiscvalue=" + cfg.getString("winmlOutputMiscvalue");
+    if(cfg.contains("winmlOutputOwnership"))
+      backendExtraParam += ";outputOwnership=" + cfg.getString("winmlOutputOwnership");
+    if(cfg.contains("winmlModelVersion"))
+      backendExtraParam += ";modelVersion=" + cfg.getString("winmlModelVersion");
+    if(cfg.contains("winmlOpenVINODeviceType"))
+      backendExtraParam += ";openvinoDeviceType=" + cfg.getString("winmlOpenVINODeviceType");
+    if(cfg.contains("winmlOpenVINODeviceId"))
+      backendExtraParam += ";openvinoDeviceId=" + cfg.getString("winmlOpenVINODeviceId");
+    if(cfg.contains("winmlOpenVINOEnableNPUFastCompile"))
+      backendExtraParam += ";openvinoEnableNPUFastCompile=" + cfg.getString("winmlOpenVINOEnableNPUFastCompile");
+    if(cfg.contains("winmlOpenVINOCacheDir"))
+      backendExtraParam += ";openvinoCacheDir=" + cfg.getString("winmlOpenVINOCacheDir");
 #else
     if(cfg.contains("openclTunerFile"))
       backendExtraParam = cfg.getString("openclTunerFile");

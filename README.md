@@ -89,8 +89,8 @@ The community also provides KataGo packages for [Homebrew](https://brew.sh) on M
 
 Use `brew install katago`. The latest config files and networks are installed in KataGo's `share` directory. Find them via `brew list --verbose katago`. A basic way to run katago will be `katago gtp -config $(brew list --verbose katago | grep 'gtp.*\.cfg') -model $(brew list --verbose katago | grep .gz | head -1)`. You should choose the Network according to the release notes here and customize the provided example config as with every other way of installing KataGo.
 
-### OpenCL vs CUDA vs TensorRT vs ROCm vs Eigen vs ONNX
-KataGo has six backends, OpenCL (GPU), CUDA (GPU), TensorRT (GPU), ROCm (GPU), Eigen (CPU), and ONNX (CPU/GPU/NPU via providers).
+### OpenCL vs CUDA vs TensorRT vs ROCm vs Eigen vs ONNX vs WinML
+KataGo has seven backends, OpenCL (GPU), CUDA (GPU), TensorRT (GPU), ROCm (GPU), Eigen (CPU), ONNX (CPU/GPU/NPU via providers), and WinML (Windows App SDK, GPU/NPU via EP catalog).
 
 The quick summary is:
   * **To easily get something working, try OpenCL if you have any good or decent GPU.**
@@ -108,6 +108,7 @@ More in detail:
   * ROCm is a GPU backend specific to AMD GPUs (it will not work with NVIDIA or Intel or any other GPUs) and requires installing [ROCm](https://rocm.docs.amd.com) and [MIOpen](https://rocm.docs.amd.com/projects/MIOpen) and a modern AMD GPU. On most GPUs, the OpenCL implementation will actually beat AMD's own ROCm/MIOpen at performance. The exception is for top-end AMD GPUs that support FP16 and stream processors, in which case sometimes one is better and sometimes the other is better.
   * Eigen is a *CPU* backend that should work widely *without* needing a GPU or fancy drivers. Use this if you don't have a good GPU or really any GPU at all. It will be quite significantly slower than OpenCL or CUDA, but on a good CPU can still often get 10 to 20 playouts per second if using the smaller (15 or 20) block neural nets. Eigen can also be compiled with AVX2 and FMA support, which can provide a big performance boost for Intel and AMD CPUs from the last few years. However, it will not run at all on older CPUs (and possibly even some recent but low-power modern CPUs) that don't support these fancy vector instructions.
   * ONNX backend uses [ONNX Runtime](https://onnxruntime.ai/). It can use CPU by default, OpenVINO for Intel hardware (including NPU on supported systems), CUDA/TensorRT for NVIDIA GPUs, MIGraphX for AMD GPUs, and CoreML on macOS. Multi-device assignment via `onnxDeviceToUseThread*` is mainly for CUDA/TensorRT/MIGraphX providers, while OpenVINO NPU setups are typically single-device.
+  * WinML backend uses the [Windows App SDK](https://learn.microsoft.com/en-us/windows/ai/) Machine Learning APIs with an EP (Execution Provider) catalog that automatically discovers and manages hardware-specific providers. Supported providers include DirectML (GPU), OpenVINO (Intel GPU/NPU), NvTensorRtRtx (NVIDIA GPU), MIGraphX (AMD GPU), and QNN (Qualcomm NPU). WinML supports both `.onnx` and `.bin.gz` model files (`.bin.gz` models are internally converted to ONNX graphs). This backend is Windows-only.
 
 For **any** implementation, it's recommended that you also tune the number of threads used if you care about optimal performance, as it can make a factor of 2-3 difference in the speed. See "Tuning for Performance" below. However, if you mostly just want to get it working, then the default untuned settings should also be still reasonable.
 
@@ -184,6 +185,33 @@ Minimal commands:
 # If you don't prepare config file, use -override-config:
 ./katago gtp -config cpp/configs/gtp_example.cfg -model <NEURALNET>.onnx -override-config onnxProvider=openvino,onnxOpenVINODeviceType=NPU
 ```
+
+#### WinML (Windows App SDK) Quick Start (Windows)
+
+The WinML backend uses the Windows App SDK EP catalog to automatically discover and manage hardware-specific execution providers. No manual driver installation beyond GPU/NPU drivers is needed — the EP catalog handles provider packages.
+
+WinML supports both `.onnx` and `.bin.gz` model files. When using `.bin.gz`, the model is internally converted to an ONNX graph at load time.
+
+Minimal commands:
+```
+# Benchmark with .bin.gz model on DirectML (default)
+./katago.exe benchmark -model <NEURALNET>.bin.gz -config gtp_custom.cfg
+
+# Benchmark with .onnx model on Intel NPU (OpenVINO)
+./katago.exe benchmark -model <NEURALNET>.onnx -config gtp_custom.cfg
+
+# Run GTP for GUI tools
+./katago.exe gtp -model <NEURALNET>.bin.gz -config gtp_custom.cfg
+
+# Override provider via command line
+./katago.exe gtp -model <NEURALNET>.bin.gz -config gtp_custom.cfg -override-config winmlProvider=openvino,winmlOpenVINODeviceType=NPU
+```
+
+Key config options for the WinML backend:
+* `winmlProvider` — execution provider: `dml` (DirectML, default), `openvino`, `nvtensorrtrtx`, `migraphx`, `qnn`, `cpu`
+* `winmlOpenVINODeviceType` — for OpenVINO provider: `NPU`, `GPU`, or `CPU`
+* `winmlOpenVINOEnableNPUFastCompile` — set `true` for faster NPU compilation (optional)
+* `winmlDeviceToUse` — GPU device index for DML/NvTensorRtRtx/MIGraphX
 
 #### Human-style Play and Analysis
 

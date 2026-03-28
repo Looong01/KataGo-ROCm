@@ -260,6 +260,8 @@ string Version::getKataGoVersionFullInfo() {
   out << "Using Eigen(CPU) backend" << endl;
 #elif defined(USE_ONNX_BACKEND)
   out << "Using ONNX backend" << endl;
+#elif defined(USE_WINML_BACKEND)
+  out << "Using WinML backend" << endl;
 #else
   out << "Using dummy backend" << endl;
 #endif
@@ -300,6 +302,8 @@ string Version::getGitRevisionWithBackend() {
   s += "-eigen";
 #elif defined(USE_ONNX_BACKEND)
   s += "-onnx";
+#elif defined(USE_WINML_BACKEND)
+  s += "-winml";
 #else
   s += "-dummy";
 #endif

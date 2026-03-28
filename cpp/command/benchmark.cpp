@@ -288,6 +288,25 @@ int MainCmds::benchmark(const vector<string>& args) {
     cout << "For ONNX Runtime multi-GPU, use numNNServerThreadsPerModel + onnxDeviceToUseThreadX." << endl;
   }
 #endif
+#ifdef USE_WINML_BACKEND
+  {
+    string winmlProvider = cfg.contains("winmlProvider") ? cfg.getString("winmlProvider") : "dml";
+    string winmlProviderLower = Global::toLower(winmlProvider);
+    cout << "You are currently using the WinML (Windows App SDK) version of KataGo." << endl;
+    cout << "Your GTP config is currently set to winmlProvider = " << winmlProvider << endl;
+    if(winmlProviderLower == "openvino") {
+      string deviceType = cfg.contains("winmlOpenVINODeviceType") ? cfg.getString("winmlOpenVINODeviceType") : "NPU";
+      cout << "OpenVINO device type = " << deviceType << endl;
+      cout << "For Intel NPU, set winmlOpenVINODeviceType = NPU. For Intel GPU, set winmlOpenVINODeviceType = GPU." << endl;
+    }
+    else if(winmlProviderLower == "dml") {
+      cout << "DirectML is the default provider, supports all DirectX 12 GPUs." << endl;
+    }
+    else if(winmlProviderLower == "nvtensorrtrtx") {
+      cout << "NvTensorRtRtx provider selected for NVIDIA RTX GPU acceleration." << endl;
+    }
+  }
+#endif
   cout << endl;
   cout << "Your GTP config is currently set to use numSearchThreads = " << params.numThreads << endl;
 
@@ -656,6 +675,9 @@ int MainCmds::genconfig(const vector<string>& args, const string& firstCommand) 
 #ifdef USE_ONNX_BACKEND
   string configOnnxProvider = "openvino";
 #endif
+#ifdef USE_WINML_BACKEND
+  string configWinmlProvider = "dml";
+#endif
 
   cout << endl;
   cout << "=========================================================================" << endl;
@@ -804,6 +826,30 @@ int MainCmds::genconfig(const vector<string>& args, const string& firstCommand) 
       });
   }
 #endif
+#ifdef USE_WINML_BACKEND
+  {
+    cout << endl;
+    string prompt =
+      "Select WinML execution provider in the generated config\n"
+      "(cpu, dml, openvino, nvtensorrtrtx, migraphx, qnn, vitisai), default dml:\n";
+    promptAndParseInput(prompt, [&](const string& line) {
+        string provider = Global::toLower(Global::trim(line));
+        if(provider == "")
+          provider = "dml";
+        if(
+          provider != "cpu" &&
+          provider != "dml" &&
+          provider != "openvino" &&
+          provider != "nvtensorrtrtx" &&
+          provider != "migraphx" &&
+          provider != "qnn" &&
+          provider != "vitisai"
+        )
+          throw StringError("Must be one of: cpu, dml, openvino, nvtensorrtrtx, migraphx, qnn, vitisai");
+        configWinmlProvider = provider;
+      });
+  }
+#endif
 
   cout << endl;
   cout << "=========================================================================" << endl;
@@ -818,6 +864,13 @@ int MainCmds::genconfig(const vector<string>& args, const string& firstCommand) 
       configOnnxProvider == "tensorrt" ||
       configOnnxProvider == "migraphx";
     askForDeviceIdxs = onnxProviderSupportsThreadDeviceMap;
+#endif
+#ifdef USE_WINML_BACKEND
+    bool winmlProviderSupportsThreadDeviceMap =
+      configWinmlProvider == "dml" ||
+      configWinmlProvider == "nvtensorrtrtx" ||
+      configWinmlProvider == "migraphx";
+    askForDeviceIdxs = winmlProviderSupportsThreadDeviceMap;
 #endif
     if(askForDeviceIdxs) {
       cout << endl;
@@ -844,6 +897,14 @@ int MainCmds::genconfig(const vector<string>& args, const string& firstCommand) 
       cout << endl;
       cout << "onnxProvider = " << configOnnxProvider << " selected." << endl;
       cout << "Skipping per-thread multi-device mapping (mainly used by cuda/tensorrt/migraphx providers)." << endl;
+      configDeviceIdxs.clear();
+    }
+#endif
+#ifdef USE_WINML_BACKEND
+    else {
+      cout << endl;
+      cout << "winmlProvider = " << configWinmlProvider << " selected." << endl;
+      cout << "Skipping per-thread multi-device mapping (mainly used by dml/nvtensorrtrtx/migraphx providers)." << endl;
       configDeviceIdxs.clear();
     }
 #endif
@@ -925,6 +986,9 @@ int MainCmds::genconfig(const vector<string>& args, const string& firstCommand) 
       configNumSearchThreads
 #ifdef USE_ONNX_BACKEND
       ,configOnnxProvider
+#endif
+#ifdef USE_WINML_BACKEND
+      ,configWinmlProvider
 #endif
     );
   };

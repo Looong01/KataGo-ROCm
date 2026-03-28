@@ -43,7 +43,7 @@ As also mentioned in the instructions below but repeated here for visibility, if
       * `git clone https://github.com/lightvector/KataGo.git`
    * Compile using CMake and make in the cpp directory:
       * `cd KataGo/cpp`
-      * `cmake . -DUSE_BACKEND=OPENCL` or `cmake . -DUSE_BACKEND=CUDA` or `cmake . -DUSE_BACKEND=TENSORRT` or `cmake . -DUSE_BACKEND=EIGEN` or `cmake . -DUSE_BACKEND=ROCM` or `cmake . -DUSE_BACKEND=ONNX` depending on which backend you want.
+      * `cmake . -DUSE_BACKEND=OPENCL` or `cmake . -DUSE_BACKEND=CUDA` or `cmake . -DUSE_BACKEND=TENSORRT` or `cmake . -DUSE_BACKEND=EIGEN` or `cmake . -DUSE_BACKEND=ROCM` or `cmake . -DUSE_BACKEND=ONNX` depending on which backend you want. (The `WINML` backend is Windows-only and not available on Linux.)
          * Specify also `-DUSE_TCMALLOC=1` if using TCMalloc.
          * Compiling will also call git commands to embed the git hash into the compiled executable, specify also `-DNO_GIT_REVISION=1` to disable it if this is causing issues for you.
          * Specify `-DUSE_AVX2=1` to also compile Eigen with AVX2 and FMA support, which will make it incompatible with old CPUs but much faster. (If you want to go further, you can also add `-DCMAKE_CXX_FLAGS='-march=native'` which will specialize to precisely your machine's CPU, but the exe might not run on other machines at all).
@@ -141,6 +141,7 @@ For `onnxProvider=openvino` on Intel NPU, a single device is typically used.
       * If using the TensorRT backend, in addition to a compatible CUDA Toolkit (https://developer.nvidia.com/cuda-toolkit), you also need TensorRT (https://developer.nvidia.com/tensorrt) that is at least version 8.5.
       * If using the Eigen backend, Eigen3, version 3.3.x. (http://eigen.tuxfamily.org/index.php?title=Main_Page#Download).
       * If using the ONNX backend, ONNX Runtime package (headers + import libs + runtime DLLs).
+      * If using the WinML backend, the Windows App SDK Machine Learning NuGet package is auto-downloaded by CMake. ONNX protobuf dependencies are also needed for `.bin.gz` model support.
       * On Windows, missing `zlib` and ONNX model-conversion dependencies (`onnx`, `protobuf`) can be auto-fetched by CMake into `cpp/build/deps/vcpkg` (default `KATAGO_AUTO_FETCH_DEPS=ON`).
       * libzip (optional, needed only for self-play training) - for example https://github.com/kiyolee/libzip-win-build
       * For MinGW it's recommended to use [MSYS2](https://www.msys2.org/) building platform to get necessary zlib and libzip dependencies:
@@ -168,7 +169,7 @@ For `onnxProvider=openvino` on Intel NPU, a single device is typically used.
           -DLIBZIP_INCLUDE_DIR_ZIPCONF:PATH="C:/msys64/mingw64/include"
           -DLIBZIP_LIBRARY:FILEPATH="C:/msys64/mingw64/lib/libzip.dll.a"
           ```
-      * Also set `USE_BACKEND` to `OPENCL`, or `CUDA`, or `TENSORRT`, or `EIGEN`, or `ROCM`, or `ONNX` depending on what backend you want to use.
+      * Also set `USE_BACKEND` to `OPENCL`, or `CUDA`, or `TENSORRT`, or `EIGEN`, or `ROCM`, or `ONNX`, or `WINML` depending on what backend you want to use.
       * Set any other options you want and re-run "Configure" again as needed after setting them. Such as:
          * `NO_GIT_REVISION` if you don't have Git or if cmake is not finding it.
          * `NO_LIBZIP` if you don't care about running self-play training and you don't have libzip.
@@ -271,6 +272,40 @@ Typical run config for Intel NPU:
 
 Multi-device assignment is mainly for `onnxProvider=cuda/tensorrt/migraphx` (`onnxDeviceToUseThread*`).
 For `onnxProvider=openvino` on Intel NPU, a single device is typically used.
+
+##### WinML (Windows App SDK) Backend
+The WinML backend uses the [Windows App SDK](https://learn.microsoft.com/en-us/windows/ai/) Machine Learning APIs with an EP (Execution Provider) catalog. The EP catalog automatically discovers, downloads, and registers hardware-specific execution providers at startup. This backend is Windows-only.
+
+WinML supports both:
+* `.onnx` models loaded directly.
+* `.bin.gz` KataGo models via internal conversion to ONNX graph (same as the ONNX backend, requires ONNX protobuf dependencies in CMake).
+
+Supported execution providers (configured via `winmlProvider`):
+* `dml` — DirectML (default, works with most GPUs on Windows 10+)
+* `openvino` — Intel OpenVINO (GPU/NPU)
+* `nvtensorrtrtx` — NVIDIA TensorRT RTX
+* `migraphx` — AMD MIGraphX
+* `qnn` — Qualcomm QNN
+* `cpu` — CPU fallback
+
+The Windows App SDK Machine Learning NuGet package is automatically downloaded by CMake during the build. No manual SDK installation is required beyond having a compatible GPU/NPU driver.
+
+##### Minimal KataGo Build Commands (Windows, WinML backend)
+On Windows, `KATAGO_AUTO_FETCH_DEPS=ON` by default, so missing `zlib`, `onnx`, and `protobuf` dependencies are auto-fetched via vcpkg into `cpp/build/deps/vcpkg`.
+
+```
+cmake -S cpp -B cpp/build -G "Visual Studio 18 2026" -A x64 -DUSE_BACKEND=WINML
+cmake --build cpp/build --config Release -j
+```
+
+Typical run config for Intel NPU via OpenVINO:
+* `winmlProvider = openvino`
+* `winmlOpenVINODeviceType = NPU`
+* `winmlOpenVINOEnableNPUFastCompile = true` (optional)
+
+Typical run config for DirectML (GPU):
+* `winmlProvider = dml`
+* `winmlDeviceToUse = 0` (GPU device index)
 
 ## MacOS
    * TLDR:

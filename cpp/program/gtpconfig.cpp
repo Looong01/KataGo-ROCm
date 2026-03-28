@@ -526,6 +526,10 @@ string GTPConfig::makeConfig(
   string onnxProviderLower = Global::toLower(Global::trim(onnxProvider));
   string onnxProviderConfigValue = onnxProviderLower.empty() ? "cpu" : onnxProviderLower;
   replace("$$ONNX_PROVIDER", "onnxProvider = " + onnxProviderConfigValue);
+#elif defined(USE_WINML_BACKEND)
+  string winmlProviderLower = Global::toLower(Global::trim(onnxProvider));
+  string winmlProviderConfigValue = winmlProviderLower.empty() ? "dml" : winmlProviderLower;
+  replace("$$ONNX_PROVIDER", "winmlProvider = " + winmlProviderConfigValue);
 #else
   (void)onnxProvider;
   replace("$$ONNX_PROVIDER", "");
@@ -543,8 +547,14 @@ string GTPConfig::makeConfig(
       onnxProviderConfigValue == "tensorrt" ||
       onnxProviderConfigValue == "migraphx";
 #endif
+#ifdef USE_WINML_BACKEND
+    bool winmlProviderSupportsThreadDeviceMap =
+      winmlProviderConfigValue == "dml" ||
+      winmlProviderConfigValue == "nvtensorrtrtx" ||
+      winmlProviderConfigValue == "migraphx";
+#endif
 
-    for(int i = 0; i<deviceIdxs.size(); i++) {
+    for(int i = 0; i<(int)deviceIdxs.size(); i++) {
 #ifdef USE_CUDA_BACKEND
       replacement += "cudaDeviceToUseThread" + Global::intToString(i) + " = " + Global::intToString(deviceIdxs[i]) + "\n";
 #endif
@@ -561,12 +571,23 @@ string GTPConfig::makeConfig(
       if(onnxProviderSupportsThreadDeviceMap)
         replacement += "onnxDeviceToUseThread" + Global::intToString(i) + " = " + Global::intToString(deviceIdxs[i]) + "\n";
 #endif
+#ifdef USE_WINML_BACKEND
+      if(winmlProviderSupportsThreadDeviceMap)
+        replacement += "winmlDeviceToUseThread" + Global::intToString(i) + " = " + Global::intToString(deviceIdxs[i]) + "\n";
+#endif
     }
 #ifdef USE_ONNX_BACKEND
     if(!onnxProviderSupportsThreadDeviceMap) {
       replacement +=
         "# NOTE: onnxDeviceToUseThread* is mainly for onnxProvider = cuda / tensorrt / migraphx.\n"
         "# For onnxProvider = " + onnxProviderConfigValue + ", per-thread device mapping is usually unnecessary.\n";
+    }
+#endif
+#ifdef USE_WINML_BACKEND
+    if(!winmlProviderSupportsThreadDeviceMap) {
+      replacement +=
+        "# NOTE: winmlDeviceToUseThread* is mainly for winmlProvider = dml / nvtensorrtrtx / migraphx.\n"
+        "# For winmlProvider = " + winmlProviderConfigValue + ", per-thread device mapping is usually unnecessary.\n";
     }
 #endif
     replace("$$MULTIPLE_GPUS", replacement);
