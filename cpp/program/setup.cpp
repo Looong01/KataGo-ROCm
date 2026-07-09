@@ -21,6 +21,8 @@ std::vector<std::string> Setup::getBackendPrefixes() {
   prefixes.push_back("metal");
   prefixes.push_back("opencl");
   prefixes.push_back("eigen");
+  prefixes.push_back("onnx");
+  prefixes.push_back("winml");
   prefixes.push_back("dummybackend");
   return prefixes;
 }
@@ -87,11 +89,44 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
   string backendPrefix = "metal";
   #elif defined(USE_OPENCL_BACKEND)
   string backendPrefix = "opencl";
+  #elif defined(USE_ONNX_BACKEND)
+  string backendPrefix = "onnx";
+  #elif defined(USE_WINML_BACKEND)
+  string backendPrefix = "winml";
   #elif defined(USE_EIGEN_BACKEND)
   string backendPrefix = "eigen";
   #else
   string backendPrefix = "dummybackend";
   #endif
+
+#if !defined(USE_ONNX_BACKEND)
+  // In non-ONNX builds, fail fast on any ONNX-specific config instead of silently ignoring it.
+  {
+    const vector<string> allKeys = cfg.unusedKeys();
+    for(const string& key : allKeys) {
+      if(Global::isPrefix(Global::toLower(key),"onnx")) {
+        throw StringError(
+          "Config key '" + key + "' requires ONNX backend, but this executable is not built with USE_BACKEND=ONNX. "
+          "Remove onnx* settings or rebuild with -DUSE_BACKEND=ONNX."
+        );
+      }
+    }
+  }
+#endif
+#if !defined(USE_WINML_BACKEND)
+  // In non-WINML builds, fail fast on any WinML-specific config instead of silently ignoring it.
+  {
+    const vector<string> allKeys = cfg.unusedKeys();
+    for(const string& key : allKeys) {
+      if(Global::isPrefix(Global::toLower(key),"winml")) {
+        throw StringError(
+          "Config key '" + key + "' requires WinML backend, but this executable is not built with USE_BACKEND=WINML. "
+          "Remove winml* settings or rebuild with -DUSE_BACKEND=WINML."
+        );
+      }
+    }
+  }
+#endif
 
   //Automatically flag keys that are for other backends as used so that we don't warn about unused keys
   //for those options
@@ -142,7 +177,7 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
         requireExactNNLen = cfg.getBool("requireMaxBoardSize");
     }
 
-    bool inputsUseNHWC = backendPrefix == "opencl" || backendPrefix == "trt" || backendPrefix == "metal" ? false : true;
+    bool inputsUseNHWC = backendPrefix == "opencl" || backendPrefix == "trt" || backendPrefix == "metal" || backendPrefix == "onnx" || backendPrefix == "winml" ? false : true;
     if(cfg.contains(backendPrefix+"InputsUseNHWC"+idxStr))
       inputsUseNHWC = cfg.getBool(backendPrefix+"InputsUseNHWC"+idxStr);
     else if(cfg.contains("inputsUseNHWC"+idxStr))
@@ -221,10 +256,73 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
 
     string homeDataDirOverride = loadHomeDataDirOverride(cfg);
 
+    string backendExtraParam;
+
     // Backend-specific options (e.g. openclTunerFile, cudaDisableGraphSDPA) are read directly by the
     // relevant compute backend off of cfg (see createComputeContext). Because they follow the backend
     // prefix convention, the getBackendPrefixes() loop above already marks them used for the backends
     // that don't read them, so no explicit mark-used is needed here.
+#if defined(USE_ONNX_BACKEND)
+    string onnxProvider = cfg.contains("onnxProvider") ? cfg.getString("onnxProvider") : "cpu";
+    backendExtraParam = "provider=" + onnxProvider;
+    if(cfg.contains("onnxInputSpatial"))
+      backendExtraParam += ";inputSpatial=" + cfg.getString("onnxInputSpatial");
+    if(cfg.contains("onnxInputGlobal"))
+      backendExtraParam += ";inputGlobal=" + cfg.getString("onnxInputGlobal");
+    if(cfg.contains("onnxInputMeta"))
+      backendExtraParam += ";inputMeta=" + cfg.getString("onnxInputMeta");
+    if(cfg.contains("onnxOutputPolicy"))
+      backendExtraParam += ";outputPolicy=" + cfg.getString("onnxOutputPolicy");
+    if(cfg.contains("onnxOutputValue"))
+      backendExtraParam += ";outputValue=" + cfg.getString("onnxOutputValue");
+    if(cfg.contains("onnxOutputMiscvalue"))
+      backendExtraParam += ";outputMiscvalue=" + cfg.getString("onnxOutputMiscvalue");
+    if(cfg.contains("onnxOutputOwnership"))
+      backendExtraParam += ";outputOwnership=" + cfg.getString("onnxOutputOwnership");
+    if(cfg.contains("onnxModelVersion"))
+      backendExtraParam += ";modelVersion=" + cfg.getString("onnxModelVersion");
+    if(cfg.contains("onnxOpenVINODeviceType"))
+      backendExtraParam += ";openvinoDeviceType=" + cfg.getString("onnxOpenVINODeviceType");
+    if(cfg.contains("onnxOpenVINODeviceId"))
+      backendExtraParam += ";openvinoDeviceId=" + cfg.getString("onnxOpenVINODeviceId");
+    if(cfg.contains("onnxOpenVINOEnableNPUFastCompile"))
+      backendExtraParam += ";openvinoEnableNPUFastCompile=" + cfg.getString("onnxOpenVINOEnableNPUFastCompile");
+    if(cfg.contains("onnxOpenVINOCacheDir"))
+      backendExtraParam += ";openvinoCacheDir=" + cfg.getString("onnxOpenVINOCacheDir");
+#elif defined(USE_WINML_BACKEND)
+    string winmlProvider = cfg.contains("winmlProvider") ? cfg.getString("winmlProvider") : "dml";
+    backendExtraParam = "provider=" + winmlProvider;
+    if(cfg.contains("winmlInputSpatial"))
+      backendExtraParam += ";inputSpatial=" + cfg.getString("winmlInputSpatial");
+    if(cfg.contains("winmlInputGlobal"))
+      backendExtraParam += ";inputGlobal=" + cfg.getString("winmlInputGlobal");
+    if(cfg.contains("winmlInputMeta"))
+      backendExtraParam += ";inputMeta=" + cfg.getString("winmlInputMeta");
+    if(cfg.contains("winmlOutputPolicy"))
+      backendExtraParam += ";outputPolicy=" + cfg.getString("winmlOutputPolicy");
+    if(cfg.contains("winmlOutputValue"))
+      backendExtraParam += ";outputValue=" + cfg.getString("winmlOutputValue");
+    if(cfg.contains("winmlOutputMiscvalue"))
+      backendExtraParam += ";outputMiscvalue=" + cfg.getString("winmlOutputMiscvalue");
+    if(cfg.contains("winmlOutputOwnership"))
+      backendExtraParam += ";outputOwnership=" + cfg.getString("winmlOutputOwnership");
+    if(cfg.contains("winmlModelVersion"))
+      backendExtraParam += ";modelVersion=" + cfg.getString("winmlModelVersion");
+    if(cfg.contains("winmlOpenVINODeviceType"))
+      backendExtraParam += ";openvinoDeviceType=" + cfg.getString("winmlOpenVINODeviceType");
+    if(cfg.contains("winmlOpenVINODeviceId"))
+      backendExtraParam += ";openvinoDeviceId=" + cfg.getString("winmlOpenVINODeviceId");
+    if(cfg.contains("winmlOpenVINOEnableNPUFastCompile"))
+      backendExtraParam += ";openvinoEnableNPUFastCompile=" + cfg.getString("winmlOpenVINOEnableNPUFastCompile");
+    if(cfg.contains("winmlOpenVINOCacheDir"))
+      backendExtraParam += ";openvinoCacheDir=" + cfg.getString("winmlOpenVINOCacheDir");
+#else
+    if(cfg.contains("openclTunerFile"))
+      backendExtraParam = cfg.getString("openclTunerFile");
+#endif
+    bool openCLReTunePerBoardSize = false;
+    if(cfg.contains("openclReTunePerBoardSize"))
+      openCLReTunePerBoardSize = cfg.getBool("openclReTunePerBoardSize");
 
     enabled_t useFP16Mode = enabled_t::Auto;
     if(cfg.contains(backendPrefix+"UseFP16-"+idxStr))
@@ -308,6 +406,7 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
       nnCacheSizePowerOfTwo,
       nnMutexPoolSizePowerOfTwo,
       debugSkipNeuralNet,
+      backendExtraParam,
       homeDataDirOverride,
       useFP16Mode,
       numNNServerThreadsPerModel,

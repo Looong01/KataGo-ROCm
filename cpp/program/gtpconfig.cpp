@@ -282,6 +282,8 @@ nnCacheSizePowerOfTwo = $$NN_CACHE_SIZE_POWER_OF_TWO
 # Size of mutex pool for nnCache is (2 ** this).
 nnMutexPoolSizePowerOfTwo = $$NN_MUTEX_POOL_SIZE_POWER_OF_TWO
 
+$$ONNX_PROVIDER
+
 $$MULTIPLE_GPUS
 
 # ===========================================================================
@@ -468,7 +470,8 @@ string GTPConfig::makeConfig(
   const std::vector<int>& deviceIdxs,
   int nnCacheSizePowerOfTwo,
   int nnMutexPoolSizePowerOfTwo,
-  int numSearchThreads
+  int numSearchThreads,
+  const string& onnxProvider
 ) {
   string config = gtpBasePart1 + gtpBasePart2;
   auto replace = [&](const string& key, const string& replacement) {
@@ -521,14 +524,39 @@ string GTPConfig::makeConfig(
   replace("$$NN_CACHE_SIZE_POWER_OF_TWO", Global::intToString(nnCacheSizePowerOfTwo));
   replace("$$NN_MUTEX_POOL_SIZE_POWER_OF_TWO", Global::intToString(nnMutexPoolSizePowerOfTwo));
 
+#ifdef USE_ONNX_BACKEND
+  string onnxProviderLower = Global::toLower(Global::trim(onnxProvider));
+  string onnxProviderConfigValue = onnxProviderLower.empty() ? "cpu" : onnxProviderLower;
+  replace("$$ONNX_PROVIDER", "onnxProvider = " + onnxProviderConfigValue);
+#elif defined(USE_WINML_BACKEND)
+  string winmlProviderLower = Global::toLower(Global::trim(onnxProvider));
+  string winmlProviderConfigValue = winmlProviderLower.empty() ? "dml" : winmlProviderLower;
+  replace("$$ONNX_PROVIDER", "winmlProvider = " + winmlProviderConfigValue);
+#else
+  (void)onnxProvider;
+  replace("$$ONNX_PROVIDER", "");
+#endif
+
   if(deviceIdxs.size() <= 0) {
     replace("$$MULTIPLE_GPUS", "");
   }
   else {
     string replacement = "";
     replacement += "numNNServerThreadsPerModel = " + Global::uint64ToString(deviceIdxs.size()) + "\n";
+#ifdef USE_ONNX_BACKEND
+    bool onnxProviderSupportsThreadDeviceMap =
+      onnxProviderConfigValue == "cuda" ||
+      onnxProviderConfigValue == "tensorrt" ||
+      onnxProviderConfigValue == "migraphx";
+#endif
+#ifdef USE_WINML_BACKEND
+    bool winmlProviderSupportsThreadDeviceMap =
+      winmlProviderConfigValue == "dml" ||
+      winmlProviderConfigValue == "nvtensorrtrtx" ||
+      winmlProviderConfigValue == "migraphx";
+#endif
 
-    for(int i = 0; i<deviceIdxs.size(); i++) {
+    for(int i = 0; i<(int)deviceIdxs.size(); i++) {
 #ifdef USE_CUDA_BACKEND
       replacement += "cudaDeviceToUseThread" + Global::intToString(i) + " = " + Global::intToString(deviceIdxs[i]) + "\n";
 #endif
@@ -538,7 +566,29 @@ string GTPConfig::makeConfig(
 #ifdef USE_OPENCL_BACKEND
       replacement += "openclDeviceToUseThread" + Global::intToString(i) + " = " + Global::intToString(deviceIdxs[i]) + "\n";
 #endif
+#ifdef USE_ONNX_BACKEND
+      if(onnxProviderSupportsThreadDeviceMap)
+        replacement += "onnxDeviceToUseThread" + Global::intToString(i) + " = " + Global::intToString(deviceIdxs[i]) + "\n";
+#endif
+#ifdef USE_WINML_BACKEND
+      if(winmlProviderSupportsThreadDeviceMap)
+        replacement += "winmlDeviceToUseThread" + Global::intToString(i) + " = " + Global::intToString(deviceIdxs[i]) + "\n";
+#endif
     }
+#ifdef USE_ONNX_BACKEND
+    if(!onnxProviderSupportsThreadDeviceMap) {
+      replacement +=
+        "# NOTE: onnxDeviceToUseThread* is mainly for onnxProvider = cuda / tensorrt / migraphx.\n"
+        "# For onnxProvider = " + onnxProviderConfigValue + ", per-thread device mapping is usually unnecessary.\n";
+    }
+#endif
+#ifdef USE_WINML_BACKEND
+    if(!winmlProviderSupportsThreadDeviceMap) {
+      replacement +=
+        "# NOTE: winmlDeviceToUseThread* is mainly for winmlProvider = dml / nvtensorrtrtx / migraphx.\n"
+        "# For winmlProvider = " + winmlProviderConfigValue + ", per-thread device mapping is usually unnecessary.\n";
+    }
+#endif
     replace("$$MULTIPLE_GPUS", replacement);
   }
 

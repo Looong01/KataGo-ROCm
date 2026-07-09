@@ -1,4 +1,10 @@
 cmake_minimum_required(VERSION 3.18.2)
+
+# Default to x64 platform on Windows with Visual Studio generator
+if(WIN32 AND NOT CMAKE_GENERATOR_PLATFORM AND CMAKE_GENERATOR MATCHES "Visual Studio")
+  set(CMAKE_GENERATOR_PLATFORM "x64" CACHE STRING "" FORCE)
+endif()
+
 if(USE_BACKEND STREQUAL "METAL")
   project(katago LANGUAGES CXX Swift)
 else()
@@ -44,7 +50,7 @@ endif()
 set(BUILD_DISTRIBUTED 0 CACHE BOOL "Build with http support for contributing to distributed training")
 set(USE_BACKEND CACHE STRING "Neural net backend")
 string(TOUPPER "${USE_BACKEND}" USE_BACKEND)
-set_property(CACHE USE_BACKEND PROPERTY STRINGS "" CUDA TENSORRT OPENCL EIGEN METAL)
+set_property(CACHE USE_BACKEND PROPERTY STRINGS "" CUDA TENSORRT OPENCL EIGEN ONNX WINML)
 
 set(USE_TCMALLOC 0 CACHE BOOL "Use TCMalloc")
 set(NO_GIT_REVISION 0 CACHE BOOL "Disable embedding the git revision into the compiled exe")
@@ -53,6 +59,107 @@ set(USE_BIGGER_BOARDS_EXPENSIVE 0 CACHE BOOL "Allow boards up to size 50. Compil
 
 set(USE_CACHE_TENSORRT_PLAN 0 CACHE BOOL "Use TENSORRT plan cache. May use a lot of disk space. Only applies when USE_BACKEND is TENSORRT.")
 mark_as_advanced(USE_CACHE_TENSORRT_PLAN)
+
+if(WIN32 OR (UNIX AND NOT APPLE))
+  set(_katago_auto_fetch_default ON)
+else()
+  set(_katago_auto_fetch_default OFF)
+endif()
+option(KATAGO_AUTO_FETCH_DEPS "Automatically fetch missing dependencies into build/deps (Windows/Linux use vcpkg)." ${_katago_auto_fetch_default})
+set(KATAGO_DEPS_DIR "${CMAKE_SOURCE_DIR}/build/deps" CACHE PATH "Directory for auto-fetched third-party dependencies")
+if(WIN32)
+  set(_katago_vcpkg_triplet_default "x64-windows")
+elseif(UNIX AND NOT APPLE)
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+    set(_katago_vcpkg_triplet_default "arm64-linux")
+  else()
+    set(_katago_vcpkg_triplet_default "x64-linux")
+  endif()
+else()
+  set(_katago_vcpkg_triplet_default "x64-windows")
+endif()
+set(KATAGO_VCPKG_TRIPLET "${_katago_vcpkg_triplet_default}" CACHE STRING "vcpkg triplet used by KATAGO_AUTO_FETCH_DEPS")
+set(KATAGO_VCPKG_ROOT "${KATAGO_DEPS_DIR}/vcpkg" CACHE PATH "Path to local vcpkg clone used by KATAGO_AUTO_FETCH_DEPS")
+mark_as_advanced(KATAGO_VCPKG_TRIPLET KATAGO_VCPKG_ROOT)
+
+function(katago_vcpkg_bootstrap_if_needed)
+  if(NOT WIN32 AND NOT (UNIX AND NOT APPLE))
+    message(FATAL_ERROR "katago_vcpkg_bootstrap_if_needed is only supported on Windows and Linux")
+  endif()
+
+  if(NOT KATAGO_AUTO_FETCH_DEPS)
+    message(FATAL_ERROR "KATAGO_AUTO_FETCH_DEPS is OFF, cannot auto-fetch missing dependency")
+  endif()
+
+  file(MAKE_DIRECTORY "${KATAGO_DEPS_DIR}")
+
+  if(WIN32)
+    set(_katago_vcpkg_exe "${KATAGO_VCPKG_ROOT}/vcpkg.exe")
+  else()
+    set(_katago_vcpkg_exe "${KATAGO_VCPKG_ROOT}/vcpkg")
+  endif()
+
+  if(NOT EXISTS "${_katago_vcpkg_exe}")
+    if(NOT EXISTS "${KATAGO_VCPKG_ROOT}/.git")
+      find_package(Git QUIET)
+      if(NOT GIT_FOUND)
+        message(FATAL_ERROR "KATAGO_AUTO_FETCH_DEPS requires git to clone vcpkg")
+      endif()
+      message(STATUS "Auto-fetch deps: cloning vcpkg into ${KATAGO_VCPKG_ROOT}")
+      execute_process(
+        COMMAND "${GIT_EXECUTABLE}" clone --depth=1 https://github.com/microsoft/vcpkg.git "${KATAGO_VCPKG_ROOT}"
+        RESULT_VARIABLE _clone_result
+        OUTPUT_VARIABLE _clone_out
+        ERROR_VARIABLE _clone_err
+      )
+      if(NOT _clone_result EQUAL 0)
+        message(FATAL_ERROR "Failed to clone vcpkg.\n${_clone_out}\n${_clone_err}")
+      endif()
+    endif()
+
+    message(STATUS "Auto-fetch deps: bootstrapping vcpkg")
+    if(WIN32)
+      execute_process(
+        COMMAND "${KATAGO_VCPKG_ROOT}/bootstrap-vcpkg.bat" -disableMetrics
+        WORKING_DIRECTORY "${KATAGO_VCPKG_ROOT}"
+        RESULT_VARIABLE _bootstrap_result
+      )
+    else()
+      execute_process(
+        COMMAND sh "${KATAGO_VCPKG_ROOT}/bootstrap-vcpkg.sh" -disableMetrics
+        WORKING_DIRECTORY "${KATAGO_VCPKG_ROOT}"
+        RESULT_VARIABLE _bootstrap_result
+      )
+    endif()
+    if(NOT _bootstrap_result EQUAL 0)
+      message(FATAL_ERROR "Failed to bootstrap vcpkg")
+    endif()
+  endif()
+endfunction()
+
+function(katago_vcpkg_install_if_needed package_name)
+  katago_vcpkg_bootstrap_if_needed()
+
+  if(WIN32)
+    set(_katago_vcpkg_exe "${KATAGO_VCPKG_ROOT}/vcpkg.exe")
+  else()
+    set(_katago_vcpkg_exe "${KATAGO_VCPKG_ROOT}/vcpkg")
+  endif()
+  if(NOT EXISTS "${_katago_vcpkg_exe}")
+    message(FATAL_ERROR "vcpkg executable not found after bootstrap: ${_katago_vcpkg_exe}")
+  endif()
+
+  set(_spec "${package_name}:${KATAGO_VCPKG_TRIPLET}")
+  message(STATUS "Auto-fetch deps: ensuring ${_spec} via vcpkg")
+  execute_process(
+    COMMAND "${_katago_vcpkg_exe}" install "${_spec}" --disable-metrics
+    WORKING_DIRECTORY "${KATAGO_VCPKG_ROOT}"
+    RESULT_VARIABLE _install_result
+  )
+  if(NOT _install_result EQUAL 0)
+    message(FATAL_ERROR "Failed to install ${_spec} via vcpkg")
+  endif()
+endfunction()
 
 #--------------------------- NEURAL NET BACKEND ------------------------------------------------------------------------
 
@@ -164,8 +271,20 @@ elseif(USE_BACKEND STREQUAL "EIGEN")
   set(NEURALNET_BACKEND_SOURCES
     neuralnet/eigenbackend.cpp
     )
+elseif(USE_BACKEND STREQUAL "ONNX")
+  message(STATUS "-DUSE_BACKEND=ONNX, using ONNX Runtime backend.")
+  set(NEURALNET_BACKEND_SOURCES
+    neuralnet/onnxbackend.cpp
+    neuralnet/onnxmodelbuilder.cpp
+    )
+elseif(USE_BACKEND STREQUAL "WINML")
+  message(STATUS "-DUSE_BACKEND=WINML, using Windows ML backend.")
+  set(NEURALNET_BACKEND_SOURCES
+    neuralnet/winmlbackend.cpp
+    neuralnet/onnxmodelbuilder.cpp
+    )
 elseif(USE_BACKEND STREQUAL "")
-  message(WARNING "${ColorBoldRed}WARNING: Using dummy neural net backend, intended for non-neural-net testing only, will fail on any code path requiring a neural net. To use neural net, specify -DUSE_BACKEND=CUDA or -DUSE_BACKEND=TENSORRT or -DUSE_BACKEND=OPENCL or -DUSE_BACKEND=EIGEN to compile with the respective backend.${ColorReset}")
+  message(WARNING "${ColorBoldRed}WARNING: Using dummy neural net backend, intended for non-neural-net testing only, will fail on any code path requiring a neural net. To use neural net, specify -DUSE_BACKEND=CUDA or -DUSE_BACKEND=TENSORRT or -DUSE_BACKEND=OPENCL or -DUSE_BACKEND=EIGEN or -DUSE_BACKEND=ONNX or -DUSE_BACKEND=WINML to compile with the respective backend.${ColorReset}")
   set(NEURALNET_BACKEND_SOURCES neuralnet/dummybackend.cpp)
 else()
   message(FATAL_ERROR "Unrecognized backend: " ${USE_BACKEND})
@@ -500,6 +619,374 @@ elseif(USE_BACKEND STREQUAL "OPENCL")
     link_directories(${OpenCL_LIBRARY})
     target_link_libraries(katago ${OpenCL_LIBRARY})
   endif()
+elseif(USE_BACKEND STREQUAL "ONNX")
+  target_compile_definitions(katago PRIVATE USE_ONNX_BACKEND)
+
+  if(WIN32)
+    set(_onnx_default_root "${CMAKE_CURRENT_SOURCE_DIR}/external/onnxruntime-win-x64-openvino")
+  elseif(UNIX AND NOT APPLE)
+    set(_onnx_default_root "${CMAKE_CURRENT_SOURCE_DIR}/external/onnxruntime-linux-x64-openvino")
+  else()
+    set(_onnx_default_root "")
+  endif()
+  set(ONNXRUNTIME_ROOT "${_onnx_default_root}" CACHE PATH "Path to ONNX Runtime package root")
+
+  if(NOT IS_DIRECTORY "${ONNXRUNTIME_ROOT}")
+    message(FATAL_ERROR "ONNXRUNTIME_ROOT does not exist: ${ONNXRUNTIME_ROOT}")
+  endif()
+
+  set(ONNXRUNTIME_INCLUDE_DIR "${ONNXRUNTIME_ROOT}/include")
+  if(NOT IS_DIRECTORY "${ONNXRUNTIME_INCLUDE_DIR}")
+    message(FATAL_ERROR "ONNX Runtime include directory not found: ${ONNXRUNTIME_INCLUDE_DIR}")
+  endif()
+  target_include_directories(katago SYSTEM PRIVATE "${ONNXRUNTIME_INCLUDE_DIR}")
+
+  if(WIN32)
+    set(ONNXRUNTIME_LIB "${ONNXRUNTIME_ROOT}/lib/onnxruntime.lib")
+    file(GLOB ONNXRUNTIME_DLLS "${ONNXRUNTIME_ROOT}/lib/*.dll")
+  else()
+    find_library(ONNXRUNTIME_LIB onnxruntime HINTS "${ONNXRUNTIME_ROOT}/lib" "${ONNXRUNTIME_ROOT}")
+  endif()
+  if(NOT EXISTS "${ONNXRUNTIME_LIB}" AND NOT ONNXRUNTIME_LIB)
+    message(FATAL_ERROR "Could not find onnxruntime library under ${ONNXRUNTIME_ROOT}")
+  endif()
+  target_link_libraries(katago ${ONNXRUNTIME_LIB})
+
+  # Required by onnxmodelbuilder.cpp for building ONNX graphs from .bin.gz.
+  # These are intentionally configurable because package layouts vary.
+  set(ONNX_INCLUDE_DIR "" CACHE PATH "Directory containing onnx/onnx_pb.h (required for .bin.gz -> ONNX conversion)")
+  set(ONNX_PROTO_LIB "" CACHE FILEPATH "Path to onnx_proto library (required for .bin.gz -> ONNX conversion)")
+  set(PROTOBUF_INCLUDE_DIR "" CACHE PATH "Directory containing google/protobuf/message.h (required for .bin.gz -> ONNX conversion)")
+  set(PROTOBUF_LIB "" CACHE FILEPATH "Path to protobuf library (protobuf-lite or libprotobuf, required for .bin.gz -> ONNX conversion)")
+  set(ONNX_PROTO_TARGET "" CACHE STRING "Imported CMake target for onnx_proto (optional, preferred over ONNX_PROTO_LIB)")
+  set(PROTOBUF_TARGET "" CACHE STRING "Imported CMake target for protobuf (optional, preferred over PROTOBUF_LIB)")
+  mark_as_advanced(CLEAR ONNX_INCLUDE_DIR ONNX_PROTO_LIB PROTOBUF_INCLUDE_DIR PROTOBUF_LIB)
+
+  # Backward compatibility with older cache variable name.
+  if(NOT PROTOBUF_LIB AND PROTOBUF_LITE_LIB)
+    set(PROTOBUF_LIB "${PROTOBUF_LITE_LIB}")
+  endif()
+
+  if(KATAGO_AUTO_FETCH_DEPS)
+    set(_katago_vcpkg_installed_root "${KATAGO_VCPKG_ROOT}/installed/${KATAGO_VCPKG_TRIPLET}")
+  endif()
+
+  if(KATAGO_AUTO_FETCH_DEPS)
+    set(_need_onnx_proto_deps FALSE)
+    if(NOT ONNX_INCLUDE_DIR OR NOT ONNX_PROTO_LIB OR NOT PROTOBUF_INCLUDE_DIR OR NOT PROTOBUF_LIB)
+      set(_need_onnx_proto_deps TRUE)
+    endif()
+    if(_need_onnx_proto_deps)
+      katago_vcpkg_install_if_needed("onnx")
+      katago_vcpkg_install_if_needed("protobuf")
+      set(_katago_vcpkg_installed_root "${KATAGO_VCPKG_ROOT}/installed/${KATAGO_VCPKG_TRIPLET}")
+      if(EXISTS "${_katago_vcpkg_installed_root}/include/onnx/onnx_pb.h")
+        set(ONNX_INCLUDE_DIR "${_katago_vcpkg_installed_root}/include" CACHE PATH "Directory containing onnx/onnx_pb.h (required for .bin.gz -> ONNX conversion)" FORCE)
+      endif()
+      find_library(_katago_onnx_proto_lib NAMES onnx_proto HINTS "${_katago_vcpkg_installed_root}/lib" "${_katago_vcpkg_installed_root}/debug/lib" NO_DEFAULT_PATH)
+      if(_katago_onnx_proto_lib)
+        set(ONNX_PROTO_LIB "${_katago_onnx_proto_lib}" CACHE FILEPATH "Path to onnx_proto library (required for .bin.gz -> ONNX conversion)" FORCE)
+      endif()
+      if(EXISTS "${_katago_vcpkg_installed_root}/include/google/protobuf/message.h")
+        set(PROTOBUF_INCLUDE_DIR "${_katago_vcpkg_installed_root}/include" CACHE PATH "Directory containing google/protobuf/message.h (required for .bin.gz -> ONNX conversion)" FORCE)
+      endif()
+      find_library(_katago_protobuf_lib NAMES protobuf-lite libprotobuf-lite protobuf libprotobuf HINTS "${_katago_vcpkg_installed_root}/lib" "${_katago_vcpkg_installed_root}/debug/lib" NO_DEFAULT_PATH)
+      if(_katago_protobuf_lib)
+        set(PROTOBUF_LIB "${_katago_protobuf_lib}" CACHE FILEPATH "Path to protobuf library (protobuf-lite or libprotobuf, required for .bin.gz -> ONNX conversion)" FORCE)
+      endif()
+    endif()
+  endif()
+
+  # Prefer config-mode packages (vcpkg provides these) so transitive dependencies
+  # like absl/utf8_range are linked automatically.
+  if(_katago_vcpkg_installed_root)
+    list(APPEND CMAKE_PREFIX_PATH "${_katago_vcpkg_installed_root}")
+  endif()
+  if(NOT ONNX_PROTO_TARGET)
+    find_package(ONNX CONFIG QUIET)
+    if(TARGET ONNX::onnx_proto)
+      set(ONNX_PROTO_TARGET "ONNX::onnx_proto")
+    endif()
+  endif()
+  if(NOT PROTOBUF_TARGET)
+    if(_katago_vcpkg_installed_root AND EXISTS "${_katago_vcpkg_installed_root}/share/protobuf/protobuf-config.cmake")
+      set(protobuf_DIR "${_katago_vcpkg_installed_root}/share/protobuf")
+    endif()
+    find_package(protobuf CONFIG QUIET)
+    if(NOT TARGET protobuf::libprotobuf AND NOT TARGET protobuf::libprotobuf-lite)
+      find_package(Protobuf CONFIG QUIET)
+    endif()
+    if(TARGET protobuf::libprotobuf)
+      set(PROTOBUF_TARGET "protobuf::libprotobuf")
+    elseif(TARGET protobuf::libprotobuf-lite)
+      set(PROTOBUF_TARGET "protobuf::libprotobuf-lite")
+    endif()
+  endif()
+
+  if(NOT ONNX_INCLUDE_DIR)
+    find_path(ONNX_INCLUDE_DIR onnx/onnx_pb.h)
+  endif()
+  if(NOT ONNX_PROTO_LIB AND NOT ONNX_PROTO_TARGET)
+    find_library(ONNX_PROTO_LIB onnx_proto)
+  endif()
+  if(NOT PROTOBUF_INCLUDE_DIR)
+    find_path(PROTOBUF_INCLUDE_DIR google/protobuf/message.h)
+  endif()
+  if(NOT PROTOBUF_LIB AND NOT PROTOBUF_TARGET)
+    find_library(PROTOBUF_LIB libprotobuf protobuf protobuf-lite protobuf-lite32)
+  endif()
+
+  if(NOT ONNX_INCLUDE_DIR OR NOT PROTOBUF_INCLUDE_DIR OR (NOT ONNX_PROTO_TARGET AND NOT ONNX_PROTO_LIB) OR (NOT PROTOBUF_TARGET AND NOT PROTOBUF_LIB))
+    message(FATAL_ERROR
+      "ONNX backend requires ONNX protobuf dependencies for .bin.gz model conversion. "
+      "Set ONNX_INCLUDE_DIR (contains onnx/onnx_pb.h), ONNX_PROTO_LIB, PROTOBUF_INCLUDE_DIR, and PROTOBUF_LIB.")
+  endif()
+  target_include_directories(katago SYSTEM PRIVATE "${ONNX_INCLUDE_DIR}")
+  target_include_directories(katago SYSTEM PRIVATE "${PROTOBUF_INCLUDE_DIR}")
+  if(ONNX_PROTO_TARGET)
+    target_link_libraries(katago ${ONNX_PROTO_TARGET})
+  else()
+    target_link_libraries(katago ${ONNX_PROTO_LIB})
+  endif()
+  if(PROTOBUF_TARGET)
+    target_link_libraries(katago ${PROTOBUF_TARGET})
+  else()
+    target_link_libraries(katago ${PROTOBUF_LIB})
+  endif()
+
+  if(WIN32 AND ONNXRUNTIME_DLLS)
+    foreach(_onnxruntime_dll IN LISTS ONNXRUNTIME_DLLS)
+      add_custom_command(TARGET katago POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${_onnxruntime_dll}"
+          $<TARGET_FILE_DIR:katago>
+      )
+    endforeach()
+  endif()
+elseif(USE_BACKEND STREQUAL "WINML")
+  target_compile_definitions(katago PRIVATE USE_WINML_BACKEND)
+
+  # ----------------------------- Windows ML (Windows App SDK ML NuGet + Store EPs) ----------------------------
+  # The WinML backend uses the Windows App SDK (WASDK) for ONNX Runtime and the Microsoft Store
+  # for hardware-specific Execution Providers (OpenVINO for Intel, TRT-RTX for NVIDIA).
+  #
+  # Prerequisites:
+  #  1. Windows App SDK 1.8 runtime installed (e.g. from Microsoft Store or winget)
+  #  2. (Optional) "Windows ML Runtime Intel OpenVINO EP 1.8" from Microsoft Store (for Intel GPU/NPU)
+  #  3. (Optional) "Windows ML Runtime NVIDIA TensorRT-RTX EP 2" from Microsoft Store (for NVIDIA GPU)
+  #  4. (Optional) "Windows ML Runtime AMD MIGraphX EP 1.8" from Microsoft Store (for AMD GPU)
+  #  5. (Optional) "Windows ML Runtime AMD Vitis AI EP 1.8" from Microsoft Store (for AMD GPU)
+  #  6. (Optional) "Windows ML Runtime Qualcomm QNN EP 1.8" from Microsoft Store (for Qualcomm Snapdragon NPU)
+  #  7. Microsoft.Windows.AI.MachineLearning NuGet package (auto-downloaded by CMake below)
+  #
+  # CMake finds the WASDK ML CMake config and discovers Store EPs without hardcoding versions.
+
+  # ---- Auto-download Microsoft.Windows.AI.MachineLearning NuGet package ----
+  set(WINML_NUGET_VERSION "2.0.297-preview" CACHE STRING
+    "Version of Microsoft.Windows.AI.MachineLearning NuGet package")
+  set(WINML_NUGET_URL
+    "https://www.nuget.org/api/v2/package/Microsoft.Windows.AI.MachineLearning/${WINML_NUGET_VERSION}")
+  set(WINAI_ML_ROOT "${CMAKE_CURRENT_BINARY_DIR}/deps/winai-ml" CACHE PATH
+    "Path to extracted Microsoft.Windows.AI.MachineLearning NuGet package root")
+  set(_winml_nupkg "${CMAKE_CURRENT_BINARY_DIR}/deps/microsoft.windows.ai.machinelearning.${WINML_NUGET_VERSION}.nupkg")
+  set(_winml_stamp "${WINAI_ML_ROOT}/.winml-${WINML_NUGET_VERSION}.stamp")
+
+  if(NOT EXISTS "${_winml_stamp}")
+    message(STATUS "WinML: downloading Microsoft.Windows.AI.MachineLearning ${WINML_NUGET_VERSION}...")
+    file(DOWNLOAD "${WINML_NUGET_URL}" "${_winml_nupkg}"
+      STATUS _winml_dl_status
+      TLS_VERIFY ON
+      SHOW_PROGRESS)
+    list(GET _winml_dl_status 0 _winml_dl_code)
+    if(NOT _winml_dl_code EQUAL 0)
+      list(GET _winml_dl_status 1 _winml_dl_msg)
+      message(FATAL_ERROR "WinML: failed to download NuGet package: ${_winml_dl_msg}\n"
+        "URL: ${WINML_NUGET_URL}\n"
+        "You can manually download and extract to ${WINAI_ML_ROOT}")
+    endif()
+    message(STATUS "WinML: extracting to ${WINAI_ML_ROOT}...")
+    file(ARCHIVE_EXTRACT INPUT "${_winml_nupkg}" DESTINATION "${WINAI_ML_ROOT}")
+    file(WRITE "${_winml_stamp}" "${WINML_NUGET_VERSION}")
+    message(STATUS "WinML: package ready at ${WINAI_ML_ROOT}")
+  else()
+    message(STATUS "WinML: using cached package at ${WINAI_ML_ROOT}")
+  endif()
+
+  # ---- Windows AI ML package (via its own CMake config) ----
+
+  set(_winml_cmake_config_dir "${WINAI_ML_ROOT}/build/cmake")
+  if(IS_DIRECTORY "${_winml_cmake_config_dir}" AND
+     EXISTS "${_winml_cmake_config_dir}/microsoft.windows.ai.machinelearning-config.cmake")
+    # Use the WASDK ML CMake config - defines WindowsML::WindowsML, WindowsML::OnnxRuntime, WindowsML::Api
+    find_package(Microsoft.Windows.AI.MachineLearning CONFIG REQUIRED
+      PATHS "${_winml_cmake_config_dir}" NO_DEFAULT_PATH)
+
+    # WindowsML::OnnxRuntime provides ORT headers (include/winml/) and import lib
+    # WindowsML::Api provides WinMLEpCatalog.h and Microsoft.Windows.AI.MachineLearning.lib
+    target_link_libraries(katago WindowsML::OnnxRuntime WindowsML::Api)
+    target_compile_definitions(katago PRIVATE WINML_HAS_EP_CATALOG)
+    message(STATUS "WinML backend: using WASDK ML package from ${WINAI_ML_ROOT}")
+    message(STATUS "WinML backend: EP Catalog (C API) enabled via WinMLEpCatalog.h")
+
+    # Copy runtime DLLs to the build output directory
+    # onnxruntime.dll and Microsoft.Windows.AI.MachineLearning.dll are IMPORTED_LOCATION DLLs
+    add_custom_command(TARGET katago POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:WindowsML::OnnxRuntime>
+        $<TARGET_FILE_DIR:katago>
+    )
+    add_custom_command(TARGET katago POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:WindowsML::Api>
+        $<TARGET_FILE_DIR:katago>
+    )
+    # DirectML.dll and onnxruntime_providers_shared.dll have no import lib; copy explicitly
+    if(DEFINED WINML_DIRECTML_DLL AND EXISTS "${WINML_DIRECTML_DLL}")
+      add_custom_command(TARGET katago POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${WINML_DIRECTML_DLL}" $<TARGET_FILE_DIR:katago>
+      )
+    endif()
+    if(DEFINED WINML_ONNXRUNTIME_PROVIDERS_SHARED_DLL AND EXISTS "${WINML_ONNXRUNTIME_PROVIDERS_SHARED_DLL}")
+      add_custom_command(TARGET katago POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${WINML_ONNXRUNTIME_PROVIDERS_SHARED_DLL}" $<TARGET_FILE_DIR:katago>
+      )
+    endif()
+  else()
+    message(FATAL_ERROR
+      "WinML backend: WASDK ML CMake config not found at ${_winml_cmake_config_dir}\n"
+      "Auto-download may have failed. Try deleting ${WINAI_ML_ROOT} and re-running CMake.\n"
+      "Or manually download from https://www.nuget.org/packages/Microsoft.Windows.AI.MachineLearning/\n"
+      "and extract to ${WINAI_ML_ROOT}")
+  endif()
+
+  # ---- Discover Store-installed EP packages (version-independent) ----
+  # Primary: WinMLEpCatalog C API at runtime. Fallback: compile-time path discovery.
+  if(WIN32)
+    file(GLOB _winml_openvino_ep_dirs
+      "C:/Program Files/WindowsApps/MicrosoftCorporationII.WinML.Intel.OpenVINO.EP.*/ExecutionProvider"
+    )
+    if(_winml_openvino_ep_dirs)
+      list(SORT _winml_openvino_ep_dirs COMPARE NATURAL ORDER DESCENDING)
+      list(GET _winml_openvino_ep_dirs 0 _winml_openvino_ep_dir)
+      string(REPLACE "\\" "/" _winml_openvino_ep_dir "${_winml_openvino_ep_dir}")
+      target_compile_definitions(katago PRIVATE "WINML_STORE_OPENVINO_EP_DIR=\"${_winml_openvino_ep_dir}\"")
+      message(STATUS "WinML: Found Store OpenVINO EP: ${_winml_openvino_ep_dir}")
+    else()
+      message(STATUS "WinML: Store OpenVINO EP not found (install from Microsoft Store)")
+    endif()
+
+    file(GLOB _winml_nvtrt_ep_dirs
+      "C:/Program Files/WindowsApps/MicrosoftCorporationII.WinML.NVIDIA.TRT-RTX.EP.*/ExecutionProvider"
+    )
+    if(_winml_nvtrt_ep_dirs)
+      list(SORT _winml_nvtrt_ep_dirs COMPARE NATURAL ORDER DESCENDING)
+      list(GET _winml_nvtrt_ep_dirs 0 _winml_nvtrt_ep_dir)
+      string(REPLACE "\\" "/" _winml_nvtrt_ep_dir "${_winml_nvtrt_ep_dir}")
+      target_compile_definitions(katago PRIVATE "WINML_STORE_NVTRT_RTX_EP_DIR=\"${_winml_nvtrt_ep_dir}\"")
+      message(STATUS "WinML: Found Store NvTensorRtRtx EP: ${_winml_nvtrt_ep_dir}")
+    else()
+      message(STATUS "WinML: Store NvTensorRtRtx EP not found (install from Microsoft Store)")
+    endif()
+  endif()
+
+  # ---- ONNX protobuf dependencies (for exportonnx command: .bin.gz -> .onnx) ----
+  # onnxmodelbuilder.cpp needs onnx_pb.h and protobuf. Same deps as ONNX backend.
+  set(ONNX_INCLUDE_DIR "" CACHE PATH "Directory containing onnx/onnx_pb.h")
+  set(ONNX_PROTO_LIB "" CACHE FILEPATH "Path to onnx_proto library")
+  set(PROTOBUF_INCLUDE_DIR "" CACHE PATH "Directory containing google/protobuf/message.h")
+  set(PROTOBUF_LIB "" CACHE FILEPATH "Path to protobuf library")
+  set(ONNX_PROTO_TARGET "" CACHE STRING "Imported CMake target for onnx_proto")
+  set(PROTOBUF_TARGET "" CACHE STRING "Imported CMake target for protobuf")
+
+  if(NOT PROTOBUF_LIB AND PROTOBUF_LITE_LIB)
+    set(PROTOBUF_LIB "${PROTOBUF_LITE_LIB}")
+  endif()
+
+  if(KATAGO_AUTO_FETCH_DEPS)
+    set(_katago_vcpkg_installed_root "${KATAGO_VCPKG_ROOT}/installed/${KATAGO_VCPKG_TRIPLET}")
+    if(NOT ONNX_INCLUDE_DIR OR NOT ONNX_PROTO_LIB OR NOT PROTOBUF_INCLUDE_DIR OR NOT PROTOBUF_LIB)
+      katago_vcpkg_install_if_needed("onnx")
+      katago_vcpkg_install_if_needed("protobuf")
+      set(_katago_vcpkg_installed_root "${KATAGO_VCPKG_ROOT}/installed/${KATAGO_VCPKG_TRIPLET}")
+      if(EXISTS "${_katago_vcpkg_installed_root}/include/onnx/onnx_pb.h")
+        set(ONNX_INCLUDE_DIR "${_katago_vcpkg_installed_root}/include" CACHE PATH "Directory containing onnx/onnx_pb.h" FORCE)
+      endif()
+      find_library(_katago_onnx_proto_lib NAMES onnx_proto HINTS "${_katago_vcpkg_installed_root}/lib" "${_katago_vcpkg_installed_root}/debug/lib" NO_DEFAULT_PATH)
+      if(_katago_onnx_proto_lib)
+        set(ONNX_PROTO_LIB "${_katago_onnx_proto_lib}" CACHE FILEPATH "Path to onnx_proto library" FORCE)
+      endif()
+      if(EXISTS "${_katago_vcpkg_installed_root}/include/google/protobuf/message.h")
+        set(PROTOBUF_INCLUDE_DIR "${_katago_vcpkg_installed_root}/include" CACHE PATH "Directory containing google/protobuf/message.h" FORCE)
+      endif()
+      find_library(_katago_protobuf_lib NAMES protobuf-lite libprotobuf-lite protobuf libprotobuf HINTS "${_katago_vcpkg_installed_root}/lib" "${_katago_vcpkg_installed_root}/debug/lib" NO_DEFAULT_PATH)
+      if(_katago_protobuf_lib)
+        set(PROTOBUF_LIB "${_katago_protobuf_lib}" CACHE FILEPATH "Path to protobuf library" FORCE)
+      endif()
+    endif()
+  endif()
+
+  if(KATAGO_AUTO_FETCH_DEPS)
+    set(_katago_vcpkg_installed_root "${KATAGO_VCPKG_ROOT}/installed/${KATAGO_VCPKG_TRIPLET}")
+  endif()
+  if(_katago_vcpkg_installed_root)
+    list(APPEND CMAKE_PREFIX_PATH "${_katago_vcpkg_installed_root}")
+  endif()
+  if(NOT ONNX_PROTO_TARGET)
+    find_package(ONNX CONFIG QUIET)
+    if(TARGET ONNX::onnx_proto)
+      set(ONNX_PROTO_TARGET "ONNX::onnx_proto")
+    endif()
+  endif()
+  if(NOT PROTOBUF_TARGET)
+    if(_katago_vcpkg_installed_root AND EXISTS "${_katago_vcpkg_installed_root}/share/protobuf/protobuf-config.cmake")
+      set(protobuf_DIR "${_katago_vcpkg_installed_root}/share/protobuf")
+    endif()
+    find_package(protobuf CONFIG QUIET)
+    if(NOT TARGET protobuf::libprotobuf AND NOT TARGET protobuf::libprotobuf-lite)
+      find_package(Protobuf CONFIG QUIET)
+    endif()
+    if(TARGET protobuf::libprotobuf)
+      set(PROTOBUF_TARGET "protobuf::libprotobuf")
+    elseif(TARGET protobuf::libprotobuf-lite)
+      set(PROTOBUF_TARGET "protobuf::libprotobuf-lite")
+    endif()
+  endif()
+
+  if(NOT ONNX_INCLUDE_DIR)
+    find_path(ONNX_INCLUDE_DIR onnx/onnx_pb.h)
+  endif()
+  if(NOT ONNX_PROTO_LIB AND NOT ONNX_PROTO_TARGET)
+    find_library(ONNX_PROTO_LIB onnx_proto)
+  endif()
+  if(NOT PROTOBUF_INCLUDE_DIR)
+    find_path(PROTOBUF_INCLUDE_DIR google/protobuf/message.h)
+  endif()
+  if(NOT PROTOBUF_LIB AND NOT PROTOBUF_TARGET)
+    find_library(PROTOBUF_LIB libprotobuf protobuf protobuf-lite protobuf-lite32)
+  endif()
+
+  if(NOT ONNX_INCLUDE_DIR OR NOT PROTOBUF_INCLUDE_DIR OR (NOT ONNX_PROTO_TARGET AND NOT ONNX_PROTO_LIB) OR (NOT PROTOBUF_TARGET AND NOT PROTOBUF_LIB))
+    message(FATAL_ERROR
+      "WinML backend requires ONNX protobuf dependencies for exportonnx command (.bin.gz -> .onnx conversion).\n"
+      "Set ONNX_INCLUDE_DIR (contains onnx/onnx_pb.h), ONNX_PROTO_LIB, PROTOBUF_INCLUDE_DIR, and PROTOBUF_LIB.\n"
+      "Or enable KATAGO_AUTO_FETCH_DEPS=ON to auto-install via vcpkg.")
+  endif()
+  target_include_directories(katago SYSTEM PRIVATE "${ONNX_INCLUDE_DIR}")
+  target_include_directories(katago SYSTEM PRIVATE "${PROTOBUF_INCLUDE_DIR}")
+  if(ONNX_PROTO_TARGET)
+    target_link_libraries(katago ${ONNX_PROTO_TARGET})
+  else()
+    target_link_libraries(katago ${ONNX_PROTO_LIB})
+  endif()
+  if(PROTOBUF_TARGET)
+    target_link_libraries(katago ${PROTOBUF_TARGET})
+  else()
+    target_link_libraries(katago ${PROTOBUF_LIB})
+  endif()
+  message(STATUS "WinML backend: ONNX protobuf dependencies found (exportonnx enabled)")
+
 elseif(USE_BACKEND STREQUAL "EIGEN")
   target_compile_definitions(katago PRIVATE USE_EIGEN_BACKEND)
   # Allow EIGEN3_INCLUDE_DIRS as a manual override (for users who downloaded
@@ -539,6 +1026,24 @@ endif()
 
 if(NO_GIT_REVISION AND (NOT BUILD_DISTRIBUTED))
   target_compile_definitions(katago PRIVATE NO_GIT_REVISION)
+endif()
+
+if(KATAGO_AUTO_FETCH_DEPS)
+  set(_need_zlib_deps FALSE)
+  if(NOT ZLIB_INCLUDE_DIR OR NOT ZLIB_LIBRARY)
+    set(_need_zlib_deps TRUE)
+  endif()
+  if(_need_zlib_deps)
+    katago_vcpkg_install_if_needed("zlib")
+    set(_katago_vcpkg_installed_root "${KATAGO_VCPKG_ROOT}/installed/${KATAGO_VCPKG_TRIPLET}")
+    if(EXISTS "${_katago_vcpkg_installed_root}/include/zlib.h")
+      set(ZLIB_INCLUDE_DIR "${_katago_vcpkg_installed_root}/include" CACHE PATH "Path to directory with zlib.h and other header files" FORCE)
+    endif()
+    find_library(_katago_zlib_lib NAMES zlib z HINTS "${_katago_vcpkg_installed_root}/lib" "${_katago_vcpkg_installed_root}/debug/lib" NO_DEFAULT_PATH)
+    if(_katago_zlib_lib)
+      set(ZLIB_LIBRARY "${_katago_zlib_lib}" CACHE FILEPATH "Path to 'libz.so' on Linux or 'libz.lib' on Windows" FORCE)
+    endif()
+  endif()
 endif()
 
 find_package(ZLIB)
