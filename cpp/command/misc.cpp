@@ -80,7 +80,9 @@ int MainCmds::exportonnx(const vector<string>& args) {
     NeuralNet::freeLoadedModel
   );
   const ModelDesc& modelDesc = NeuralNet::getModelDesc(loadedModel.get());
-  string onnxBytes = OnnxModelBuilder::buildOnnxModel(modelDesc, nnXLen, nnYLen);
+  OnnxModelBuilder::Result onnxResult =
+    OnnxModelBuilder::build(modelDesc, nnXLen, nnYLen, /*requireExactNNLen=*/false, /*transformerNHWC=*/false, nullptr);
+  string onnxBytes = std::move(onnxResult.serializedModel);
 
   ofstream out;
   FileUtils::open(out, outputFile, std::ios::binary | std::ios::out);

@@ -8,7 +8,7 @@
 #include "../neuralnet/modelversion.h"
 #include "../neuralnet/nninputs.h"
 
-#include "onnx.pb.h"
+#include "onnx/onnx_pb.h"
 
 using namespace std;
 

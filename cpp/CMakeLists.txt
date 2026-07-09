@@ -66,9 +66,13 @@ else()
   set(_katago_auto_fetch_default OFF)
 endif()
 option(KATAGO_AUTO_FETCH_DEPS "Automatically fetch missing dependencies into build/deps (Windows/Linux use vcpkg)." ${_katago_auto_fetch_default})
-set(KATAGO_DEPS_DIR "${CMAKE_SOURCE_DIR}/build/deps" CACHE PATH "Directory for auto-fetched third-party dependencies")
+set(KATAGO_DEPS_DIR "${CMAKE_BINARY_DIR}/deps" CACHE PATH "Directory for auto-fetched third-party dependencies")
 if(WIN32)
-  set(_katago_vcpkg_triplet_default "x64-windows")
+  # Static libs (not DLLs), but still linked against the dynamic CRT (matches how katago.exe
+  # itself is built). Using static libs here avoids a class of heap-corruption crash where a
+  # dependency (e.g. abseil_dll.dll, a transitive dependency of protobuf) ends up loaded as two
+  # separate DLL instances at runtime, corrupting the heap during static initialization.
+  set(_katago_vcpkg_triplet_default "x64-windows-static-md")
 elseif(UNIX AND NOT APPLE)
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
     set(_katago_vcpkg_triplet_default "arm64-linux")
@@ -840,7 +844,29 @@ elseif(USE_BACKEND STREQUAL "WINML")
         $<TARGET_FILE:WindowsML::Api>
         $<TARGET_FILE_DIR:katago>
     )
-    # DirectML.dll and onnxruntime_providers_shared.dll have no import lib; copy explicitly
+    # DirectML.dll and onnxruntime_providers_shared.dll have no import lib and aren't discoverable
+    # via a CMake target; they live alongside onnxruntime.dll in the WASDK package's runtime dir,
+    # so derive their location from that DLL's own path instead of requiring a manually-set cache var.
+    get_target_property(_winml_ort_dll_path WindowsML::OnnxRuntime IMPORTED_LOCATION)
+    if(NOT _winml_ort_dll_path)
+      get_target_property(_winml_ort_dll_path WindowsML::OnnxRuntime IMPORTED_LOCATION_RELEASE)
+    endif()
+    if(_winml_ort_dll_path)
+      get_filename_component(_winml_ort_dll_dir "${_winml_ort_dll_path}" DIRECTORY)
+      if(EXISTS "${_winml_ort_dll_dir}/DirectML.dll")
+        add_custom_command(TARGET katago POST_BUILD
+          COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${_winml_ort_dll_dir}/DirectML.dll" $<TARGET_FILE_DIR:katago>
+        )
+      endif()
+      if(EXISTS "${_winml_ort_dll_dir}/onnxruntime_providers_shared.dll")
+        add_custom_command(TARGET katago POST_BUILD
+          COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${_winml_ort_dll_dir}/onnxruntime_providers_shared.dll" $<TARGET_FILE_DIR:katago>
+        )
+      endif()
+    endif()
+    # Backwards-compatible manual override, in case the auto-discovery above ever misses a DLL.
     if(DEFINED WINML_DIRECTML_DLL AND EXISTS "${WINML_DIRECTML_DLL}")
       add_custom_command(TARGET katago POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -888,6 +914,21 @@ elseif(USE_BACKEND STREQUAL "WINML")
       message(STATUS "WinML: Found Store NvTensorRtRtx EP: ${_winml_nvtrt_ep_dir}")
     else()
       message(STATUS "WinML: Store NvTensorRtRtx EP not found (install from Microsoft Store)")
+    endif()
+
+    # AMD GPU EP (MIGraphX). Microsoft has shipped this package under both
+    # "AMD.MIGraphX.EP" and "AMD.GPU.EP" naming; match both.
+    file(GLOB _winml_migraphx_ep_dirs
+      "C:/Program Files/WindowsApps/MicrosoftCorporationII.WinML.AMD.*.EP.*/ExecutionProvider"
+    )
+    if(_winml_migraphx_ep_dirs)
+      list(SORT _winml_migraphx_ep_dirs COMPARE NATURAL ORDER DESCENDING)
+      list(GET _winml_migraphx_ep_dirs 0 _winml_migraphx_ep_dir)
+      string(REPLACE "\\" "/" _winml_migraphx_ep_dir "${_winml_migraphx_ep_dir}")
+      target_compile_definitions(katago PRIVATE "WINML_STORE_MIGRAPHX_EP_DIR=\"${_winml_migraphx_ep_dir}\"")
+      message(STATUS "WinML: Found Store MIGraphX EP: ${_winml_migraphx_ep_dir}")
+    else()
+      message(STATUS "WinML: Store MIGraphX/AMD GPU EP not found (install from Microsoft Store)")
     endif()
   endif()
 
@@ -987,6 +1028,32 @@ elseif(USE_BACKEND STREQUAL "WINML")
   endif()
   message(STATUS "WinML backend: ONNX protobuf dependencies found (exportonnx enabled)")
 
+  # ---- Copy vcpkg-built shared runtime DLLs (protobuf, abseil, zlib) next to katago.exe ----
+  # These are dynamically linked (PROTOBUF_USE_DLLS / ABSL_CONSUME_DLL) and would otherwise require
+  # the vcpkg installed/bin dir to be on PATH to run katago.exe standalone. This is a multi-config
+  # (Visual Studio) generator, so both release and debug-suffixed DLLs (e.g. libprotobufd.dll) are
+  # copied unconditionally; each config only ends up loading the ones it actually links against.
+  file(GLOB _winml_vcpkg_runtime_dlls
+    "${_katago_vcpkg_installed_root}/bin/abseil_dll.dll"
+    "${_katago_vcpkg_installed_root}/bin/libprotobuf.dll"
+    "${_katago_vcpkg_installed_root}/bin/libprotobuf-lite.dll"
+    "${_katago_vcpkg_installed_root}/bin/zlib1.dll"
+    "${_katago_vcpkg_installed_root}/bin/z.dll"
+    "${_katago_vcpkg_installed_root}/debug/bin/abseil_dll.dll"
+    "${_katago_vcpkg_installed_root}/debug/bin/libprotobufd.dll"
+    "${_katago_vcpkg_installed_root}/debug/bin/libprotobuf-lited.dll"
+    "${_katago_vcpkg_installed_root}/debug/bin/zlib1d.dll"
+    "${_katago_vcpkg_installed_root}/debug/bin/zd.dll"
+  )
+  if(_winml_vcpkg_runtime_dlls)
+    foreach(_winml_vcpkg_dll ${_winml_vcpkg_runtime_dlls})
+      add_custom_command(TARGET katago POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${_winml_vcpkg_dll}" $<TARGET_FILE_DIR:katago>
+      )
+    endforeach()
+  endif()
+
 elseif(USE_BACKEND STREQUAL "EIGEN")
   target_compile_definitions(katago PRIVATE USE_EIGEN_BACKEND)
   # Allow EIGEN3_INCLUDE_DIRS as a manual override (for users who downloaded
@@ -1039,7 +1106,8 @@ if(KATAGO_AUTO_FETCH_DEPS)
     if(EXISTS "${_katago_vcpkg_installed_root}/include/zlib.h")
       set(ZLIB_INCLUDE_DIR "${_katago_vcpkg_installed_root}/include" CACHE PATH "Path to directory with zlib.h and other header files" FORCE)
     endif()
-    find_library(_katago_zlib_lib NAMES zlib z HINTS "${_katago_vcpkg_installed_root}/lib" "${_katago_vcpkg_installed_root}/debug/lib" NO_DEFAULT_PATH)
+    # "zs" is vcpkg's name for the static zlib lib (as opposed to "zlib"/"z" for the DLL import lib).
+    find_library(_katago_zlib_lib NAMES zlib z zs HINTS "${_katago_vcpkg_installed_root}/lib" "${_katago_vcpkg_installed_root}/debug/lib" NO_DEFAULT_PATH)
     if(_katago_zlib_lib)
       set(ZLIB_LIBRARY "${_katago_zlib_lib}" CACHE FILEPATH "Path to 'libz.so' on Linux or 'libz.lib' on Windows" FORCE)
     endif()

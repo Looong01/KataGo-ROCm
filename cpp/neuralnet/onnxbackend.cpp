@@ -219,10 +219,15 @@ struct ComputeContext {
   bool openvinoEnableNPUFastCompile;
   string openvinoCacheDir;
 
-  // Configurable input/output node names
+  // Configurable input/output node names. Defaults match the node names emitted by the shared
+  // OnnxModelBuilder::build() (see onnxmodelbuilder.cpp) used for .bin.gz -> ONNX conversion,
+  // which is also what trtbackend.cpp consumes. Raw .onnx models can override these if they use
+  // different names.
+  string inputMaskName;
   string inputSpatialName;
   string inputGlobalName;
   string inputMetaName;
+  string outputPolicyPassName;
   string outputPolicyName;
   string outputValueName;
   string outputMiscvalueName;
@@ -240,13 +245,15 @@ struct ComputeContext {
       openvinoDeviceId(""),
       openvinoEnableNPUFastCompile(false),
       openvinoCacheDir(""),
-      inputSpatialName("input_spatial"),
-      inputGlobalName("input_global"),
-      inputMetaName("input_meta"),
-      outputPolicyName("out_policy"),
-      outputValueName("out_value"),
-      outputMiscvalueName("out_miscvalue"),
-      outputOwnershipName("out_ownership"),
+      inputMaskName("InputMask"),
+      inputSpatialName("InputSpatial"),
+      inputGlobalName("InputGlobal"),
+      inputMetaName("InputMeta"),
+      outputPolicyPassName("OutputPolicyPass"),
+      outputPolicyName("OutputPolicy"),
+      outputValueName("OutputValue"),
+      outputMiscvalueName("OutputScoreValue"),
+      outputOwnershipName("OutputOwnership"),
       configModelVersion(-1)
   {}
 };
@@ -477,42 +484,17 @@ ComputeContext* NeuralNet::createComputeContext(
   Logger* logger,
   int nnXLen,
   int nnYLen,
-  const string& backendExtraParam,
   const string& homeDataDirOverride,
-  bool openCLReTunePerBoardSize,
   enabled_t useFP16Mode,
-  enabled_t useNHWCMode,
-  const LoadedModel* loadedModel
+  const LoadedModel* loadedModel,
+  ConfigParser& cfg
 ) {
   (void)gpuIdxs;
   (void)homeDataDirOverride;
-  (void)openCLReTunePerBoardSize;
   (void)useFP16Mode;
-  (void)useNHWCMode;
   (void)loadedModel;
 
-  // Parse backendExtraParam as "key=value;key=value;..."
-  string providerName = "cpu";
-  map<string, string> params;
-  if(!backendExtraParam.empty()) {
-    vector<string> parts = Global::split(backendExtraParam, ';');
-    for(const string& part : parts) {
-      size_t eq = part.find('=');
-      if(eq != string::npos) {
-        string key = Global::trim(part.substr(0, eq));
-        string val = Global::trim(part.substr(eq + 1));
-        params[key] = val;
-      } else {
-        // Legacy: bare string is provider name
-        string trimmed = Global::trim(part);
-        if(!trimmed.empty())
-          providerName = trimmed;
-      }
-    }
-    if(params.count("provider"))
-      providerName = params["provider"];
-  }
-  providerName = Global::toLower(providerName);
+  string providerName = cfg.contains("onnxProvider") ? Global::toLower(cfg.getString("onnxProvider")) : "cpu";
 
   if(logger != NULL)
     logger->write("ONNX backend: creating compute context for " +
@@ -521,23 +503,23 @@ ComputeContext* NeuralNet::createComputeContext(
 
   ComputeContext* ctx = new ComputeContext(nnXLen, nnYLen, providerName);
 
-  // Apply configured node names
-  if(params.count("inputSpatial")) ctx->inputSpatialName = params["inputSpatial"];
-  if(params.count("inputGlobal")) ctx->inputGlobalName = params["inputGlobal"];
-  if(params.count("inputMeta")) ctx->inputMetaName = params["inputMeta"];
-  if(params.count("outputPolicy")) ctx->outputPolicyName = params["outputPolicy"];
-  if(params.count("outputValue")) ctx->outputValueName = params["outputValue"];
-  if(params.count("outputMiscvalue")) ctx->outputMiscvalueName = params["outputMiscvalue"];
-  if(params.count("outputOwnership")) ctx->outputOwnershipName = params["outputOwnership"];
-  if(params.count("openvinoDeviceType")) ctx->openvinoDeviceType = params["openvinoDeviceType"];
-  if(params.count("openvinoDeviceId")) ctx->openvinoDeviceId = params["openvinoDeviceId"];
-  if(params.count("openvinoEnableNPUFastCompile")) {
-    string v = Global::toLower(params["openvinoEnableNPUFastCompile"]);
-    ctx->openvinoEnableNPUFastCompile = (v == "1" || v == "true" || v == "yes" || v == "on");
-  }
-  if(params.count("openvinoCacheDir")) ctx->openvinoCacheDir = params["openvinoCacheDir"];
-  if(params.count("modelVersion")) {
-    int v = Global::stringToInt(params["modelVersion"]);
+  // Apply configured node names / options, read directly off cfg.
+  if(cfg.contains("onnxInputMask")) ctx->inputMaskName = cfg.getString("onnxInputMask");
+  if(cfg.contains("onnxInputSpatial")) ctx->inputSpatialName = cfg.getString("onnxInputSpatial");
+  if(cfg.contains("onnxInputGlobal")) ctx->inputGlobalName = cfg.getString("onnxInputGlobal");
+  if(cfg.contains("onnxInputMeta")) ctx->inputMetaName = cfg.getString("onnxInputMeta");
+  if(cfg.contains("onnxOutputPolicyPass")) ctx->outputPolicyPassName = cfg.getString("onnxOutputPolicyPass");
+  if(cfg.contains("onnxOutputPolicy")) ctx->outputPolicyName = cfg.getString("onnxOutputPolicy");
+  if(cfg.contains("onnxOutputValue")) ctx->outputValueName = cfg.getString("onnxOutputValue");
+  if(cfg.contains("onnxOutputMiscvalue")) ctx->outputMiscvalueName = cfg.getString("onnxOutputMiscvalue");
+  if(cfg.contains("onnxOutputOwnership")) ctx->outputOwnershipName = cfg.getString("onnxOutputOwnership");
+  if(cfg.contains("onnxOpenVINODeviceType")) ctx->openvinoDeviceType = cfg.getString("onnxOpenVINODeviceType");
+  if(cfg.contains("onnxOpenVINODeviceId")) ctx->openvinoDeviceId = cfg.getString("onnxOpenVINODeviceId");
+  if(cfg.contains("onnxOpenVINOEnableNPUFastCompile"))
+    ctx->openvinoEnableNPUFastCompile = cfg.getBool("onnxOpenVINOEnableNPUFastCompile");
+  if(cfg.contains("onnxOpenVINOCacheDir")) ctx->openvinoCacheDir = cfg.getString("onnxOpenVINOCacheDir");
+  if(cfg.contains("onnxModelVersion")) {
+    int v = Global::stringToInt(cfg.getString("onnxModelVersion"));
     if(v >= 0)
       ctx->configModelVersion = v;
   }
@@ -647,7 +629,8 @@ void NeuralNet::getOutput(
     spatialShape.data(), spatialShape.size()
   );
 
-  std::array<int64_t, 2> globalShape = {batchSize, numGlobalFeatures};
+  // NC11 (rank 4), matching OnnxModelBuilder::build()'s addInputNC11("InputGlobal", ...).
+  std::array<int64_t, 4> globalShape = {batchSize, numGlobalFeatures, 1, 1};
   Ort::Value globalTensor = Ort::Value::CreateTensor<float>(
     memInfo, inputBuffers->globalInput.data(), inputBuffers->singleInputGlobalElts * batchSize,
     globalShape.data(), globalShape.size()
@@ -660,13 +643,35 @@ void NeuralNet::getOutput(
   if(spatialIdx < 0 || globalIdx < 0)
     throw StringError("ONNX backend: could not find expected input names");
 
+  const int spatialPolicyLen = nnXLen * nnYLen;
+
+  // InputMask (the on-board mask, [N,1,H,W]) is required by graphs built by OnnxModelBuilder::build()
+  // (used for .bin.gz models), but may be absent from hand-exported raw .onnx models - only require
+  // it if the session actually declares it. It's channel 0 of the spatial input (KataGo convention),
+  // but not contiguous across rows within the spatial buffer, so gather it into its own buffer.
+  int maskIdx = findNameIndex(computeHandle->inputNames, {ctx->inputMaskName});
+  vector<float> maskBuf;
+  Ort::Value maskTensor(nullptr);
+  if(maskIdx >= 0) {
+    maskBuf.resize((size_t)batchSize * spatialPolicyLen);
+    for(int r = 0; r < batchSize; r++) {
+      const float* rowSpatial = inputBuffers->spatialInput.data() + inputBuffers->singleInputElts * r;
+      std::copy(rowSpatial, rowSpatial + spatialPolicyLen, maskBuf.data() + (size_t)r * spatialPolicyLen);
+    }
+    std::array<int64_t, 4> maskShape = {batchSize, 1, nnYLen, nnXLen};
+    maskTensor = Ort::Value::CreateTensor<float>(
+      memInfo, maskBuf.data(), maskBuf.size(), maskShape.data(), maskShape.size()
+    );
+  }
+
   int metaIdx = -1;
   Ort::Value metaTensor(nullptr);
   if(computeHandle->numInputMetaChannels > 0) {
     metaIdx = findNameIndex(computeHandle->inputNames, {ctx->inputMetaName});
     if(metaIdx < 0)
-      throw StringError("ONNX backend: model has metadata channels but could not find input_meta");
-    std::array<int64_t, 2> metaShape = {batchSize, computeHandle->numInputMetaChannels};
+      throw StringError("ONNX backend: model has metadata channels but could not find " + ctx->inputMetaName);
+    // NC11 (rank 4), matching trtbackend.cpp's InputMeta declaration.
+    std::array<int64_t, 4> metaShape = {batchSize, computeHandle->numInputMetaChannels, 1, 1};
     metaTensor = Ort::Value::CreateTensor<float>(
       memInfo, inputBuffers->metaInput.data(), inputBuffers->singleInputMetaElts * batchSize,
       metaShape.data(), metaShape.size()
@@ -682,9 +687,11 @@ void NeuralNet::getOutput(
       inputTensors.push_back(std::move(globalTensor));
     else if((int)i == metaIdx)
       inputTensors.push_back(std::move(metaTensor));
+    else if((int)i == maskIdx)
+      inputTensors.push_back(std::move(maskTensor));
     else {
       throw StringError("ONNX backend: unexpected input node '" + computeHandle->inputNames[i] +
-                         "' -- only spatial, global, and meta inputs are supported");
+                         "' -- only mask, spatial, global, and meta inputs are supported");
     }
   }
 
@@ -698,12 +705,17 @@ void NeuralNet::getOutput(
     computeHandle->outputNamePtrs.size()
   );
 
-  // Find output indices using configured node names
+  // Find output indices using configured node names. OutputPolicyPass ([N,C]) and OutputPolicy
+  // ([N,C,H,W]) are separate tensors in graphs built by OnnxModelBuilder::build() - the pass logit
+  // isn't appended to the spatial policy tensor.
+  int policyPassOutputIdx = findNameIndex(computeHandle->outputNames, {ctx->outputPolicyPassName});
   int policyOutputIdx = findNameIndex(computeHandle->outputNames, {ctx->outputPolicyName});
   int valueOutputIdx = findNameIndex(computeHandle->outputNames, {ctx->outputValueName});
   int miscvalueOutputIdx = findNameIndex(computeHandle->outputNames, {ctx->outputMiscvalueName});
   int ownershipOutputIdx = findNameIndex(computeHandle->outputNames, {ctx->outputOwnershipName});
 
+  if(policyPassOutputIdx < 0)
+    throw StringError("ONNX backend: could not find policy-pass output node '" + ctx->outputPolicyPassName + "'");
   if(policyOutputIdx < 0)
     throw StringError("ONNX backend: could not find policy output node '" + ctx->outputPolicyName + "'");
   if(valueOutputIdx < 0)
@@ -713,19 +725,19 @@ void NeuralNet::getOutput(
   if(ownershipOutputIdx < 0)
     throw StringError("ONNX backend: could not find ownership output node '" + ctx->outputOwnershipName + "'");
 
+  const float* policyPassData = outputTensors[policyPassOutputIdx].GetTensorData<float>();
   const float* policyData = outputTensors[policyOutputIdx].GetTensorData<float>();
   const float* valueData = outputTensors[valueOutputIdx].GetTensorData<float>();
   const float* miscvalueData = outputTensors[miscvalueOutputIdx].GetTensorData<float>();
   const float* ownershipData = outputTensors[ownershipOutputIdx].GetTensorData<float>();
 
+  assert(policyPassData != nullptr);
   assert(policyData != nullptr);
   assert(valueData != nullptr);
   assert(miscvalueData != nullptr);
   assert(ownershipData != nullptr);
   assert((int)outputs.size() == batchSize);
 
-  const int policyResultLen = computeHandle->policyResultLen;
-  const int spatialPolicyLen = nnXLen * nnYLen;
   float policyProbsTmp[NNPos::MAX_NN_POLICY_SIZE];
 
   for(int row = 0; row < batchSize; row++) {
@@ -734,26 +746,28 @@ void NeuralNet::getOutput(
     assert(output->nnYLen == nnYLen);
     float policyOptimism = (float)inputBufs[row]->policyOptimism;
 
-    // Policy: [N, C, H*W+1]
+    // Policy: OutputPolicy is [N, C, H*W] (channel-major, NCHW), OutputPolicyPass is [N, C]
+    // (one pass logit per channel). These are two separate tensors, not a single [N,C,H*W+1].
     {
-      const float* policyRowBase = policyData + row * numPolicyChannels * policyResultLen;
+      const float* policyRowBase = policyData + (size_t)row * numPolicyChannels * spatialPolicyLen;
+      const float* policyPassRowBase = policyPassData + (size_t)row * numPolicyChannels;
       float* policyProbs = output->policyProbs;
 
       if(numPolicyChannels >= 2) {
         const float* ch0 = policyRowBase;
-        const float* ch1 = policyRowBase + policyResultLen;
+        const float* ch1 = policyRowBase + spatialPolicyLen;
         for(int i = 0; i < spatialPolicyLen; i++) {
           float p = ch0[i];
           float pOpt = ch1[i];
           policyProbsTmp[i] = p + (pOpt - p) * policyOptimism;
         }
         SymmetryHelpers::copyOutputsWithSymmetry(policyProbsTmp, policyProbs, 1, nnYLen, nnXLen, inputBufs[row]->symmetry);
-        policyProbs[spatialPolicyLen] = ch0[spatialPolicyLen] + (ch1[spatialPolicyLen] - ch0[spatialPolicyLen]) * policyOptimism;
+        policyProbs[spatialPolicyLen] = policyPassRowBase[0] + (policyPassRowBase[1] - policyPassRowBase[0]) * policyOptimism;
       } else {
         assert(numPolicyChannels == 1);
         const float* ch0 = policyRowBase;
         SymmetryHelpers::copyOutputsWithSymmetry(ch0, policyProbs, 1, nnYLen, nnXLen, inputBufs[row]->symmetry);
-        policyProbs[spatialPolicyLen] = ch0[spatialPolicyLen];
+        policyProbs[spatialPolicyLen] = policyPassRowBase[0];
       }
     }
 

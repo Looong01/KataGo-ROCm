@@ -279,15 +279,23 @@ WinML supports both:
 * `.onnx` models loaded directly.
 * `.bin.gz` KataGo models via internal conversion to ONNX graph (same as the ONNX backend, requires ONNX protobuf dependencies in CMake).
 
-Supported execution providers (configured via `winmlProvider`):
-* `dml` — DirectML (default, works with most GPUs on Windows 10+)
-* `openvino` — Intel OpenVINO (GPU/NPU)
+Supported execution providers (configured via `winmlProvider`, **required** — there is no default,
+and if it is unset or refers to a provider not installed on the machine, KataGo will print the list
+of providers actually available on the machine and exit):
+* `dml` — DirectML (works with most GPUs on Windows 10+)
+* `openvino` — Intel OpenVINO (CPU/GPU/NPU). Also requires `winmlOpenVINODeviceType` to be set
+  explicitly to `cpu`, `gpu`, or `npu` — if omitted, KataGo prints the OpenVINO hardware types
+  actually detected on the machine and exits.
 * `nvtensorrtrtx` — NVIDIA TensorRT RTX
-* `migraphx` — AMD MIGraphX
+* `migraphx` — AMD MIGraphX (also distributed under the Store package name "AMD GPU EP")
+* `vitisai` — AMD VitisAI (NPU)
 * `qnn` — Qualcomm QNN
 * `cpu` — CPU fallback
 
-The Windows App SDK Machine Learning NuGet package is automatically downloaded by CMake during the build. No manual SDK installation is required beyond having a compatible GPU/NPU driver.
+`openvino`/`nvtensorrtrtx`/`migraphx`/`vitisai`/`qnn` are downloaded and updated automatically by
+Windows ML from the Microsoft Store the first time they're used; `dml` and `cpu` are always
+available. The Windows App SDK Machine Learning NuGet package is automatically downloaded by CMake
+during the build. No manual SDK installation is required beyond having a compatible GPU/NPU driver.
 
 ##### Minimal KataGo Build Commands (Windows, WinML backend)
 On Windows, `KATAGO_AUTO_FETCH_DEPS=ON` by default, so missing `zlib`, `onnx`, and `protobuf` dependencies are auto-fetched via vcpkg into `cpp/build/deps/vcpkg`.

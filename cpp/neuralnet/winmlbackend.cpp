@@ -25,6 +25,7 @@
 #include <windows.h>
 #endif
 
+#include <algorithm>
 #include <fstream>
 #include <unordered_map>
 #include <iostream>
@@ -237,6 +238,9 @@ static const wchar_t* kStoreEpPackageFamilies[] = {
   L"MicrosoftCorporationII.WinML.NVIDIA.TRT-RTX.EP.1.8_8wekyb3d8bbwe",
   L"MicrosoftCorporationII.WinML.AMD.MIGraphX.EP_8wekyb3d8bbwe",
   L"MicrosoftCorporationII.WinML.AMD.MIGraphX.EP.1.8_8wekyb3d8bbwe",
+  // Microsoft renamed this package from "AMD.MIGraphX.EP" to "AMD.GPU.EP" (still backed by MIGraphX).
+  L"MicrosoftCorporationII.WinML.AMD.GPU.EP.1.8_8wekyb3d8bbwe",
+  L"MicrosoftCorporationII.WinML.AMD.GPU.EP_8wekyb3d8bbwe",
   L"MicrosoftCorporationII.WinML.Xilinx.VitisAI.EP_8wekyb3d8bbwe",
   L"MicrosoftCorporationII.WinML.Xilinx.VitisAI.EP.1.8_8wekyb3d8bbwe",
   L"MicrosoftCorporationII.WinML.Qualcomm.QNN.EP_8wekyb3d8bbwe",
@@ -341,10 +345,15 @@ struct ComputeContext {
   bool openvinoEnableNPUFastCompile;
   string openvinoCacheDir;
 
-  // Configurable input/output node names
+  // Configurable input/output node names. Defaults match the node names emitted by the shared
+  // OnnxModelBuilder::build() (see onnxmodelbuilder.cpp) used for .bin.gz -> ONNX conversion,
+  // which is also what trtbackend.cpp consumes. Raw .onnx models can override these if they use
+  // different names.
+  string inputMaskName;
   string inputSpatialName;
   string inputGlobalName;
   string inputMetaName;
+  string outputPolicyPassName;
   string outputPolicyName;
   string outputValueName;
   string outputMiscvalueName;
@@ -362,13 +371,15 @@ struct ComputeContext {
       openvinoDeviceId(""),
       openvinoEnableNPUFastCompile(false),
       openvinoCacheDir(""),
-      inputSpatialName("input_spatial"),
-      inputGlobalName("input_global"),
-      inputMetaName("input_meta"),
-      outputPolicyName("out_policy"),
-      outputValueName("out_value"),
-      outputMiscvalueName("out_miscvalue"),
-      outputOwnershipName("out_ownership"),
+      inputMaskName("InputMask"),
+      inputSpatialName("InputSpatial"),
+      inputGlobalName("InputGlobal"),
+      inputMetaName("InputMeta"),
+      outputPolicyPassName("OutputPolicyPass"),
+      outputPolicyName("OutputPolicy"),
+      outputValueName("OutputValue"),
+      outputMiscvalueName("OutputScoreValue"),
+      outputOwnershipName("OutputOwnership"),
       configModelVersion(-1)
   {
     // Register Store EP libraries on this Env so AppendExecutionProvider can find them.
@@ -457,7 +468,9 @@ struct ComputeHandle {
       onnxData = loadedModel.rawOnnxBytes.data();
       onnxSize = loadedModel.rawOnnxBytes.size();
     } else {
-      builtOnnxBytes = OnnxModelBuilder::buildOnnxModel(loadedModel.modelDesc, ctx->nnXLen, ctx->nnYLen);
+      OnnxModelBuilder::Result onnxResult =
+        OnnxModelBuilder::build(loadedModel.modelDesc, ctx->nnXLen, ctx->nnYLen, /*requireExactNNLen=*/false, /*transformerNHWC=*/false, logger);
+      builtOnnxBytes = std::move(onnxResult.serializedModel);
       if(logger != NULL)
         logger->write("WinML backend: ONNX graph built from .bin.gz (" +
                        Global::uint64ToString(builtOnnxBytes.size()) + " bytes)");
@@ -899,7 +912,7 @@ void NeuralNet::globalInitialize() {
 
       // Try to find MIGraphX EP
       g_migraphxEpLibPath = findEpLibraryPath(catalog, "MIGraphX",
-        {"MIGraphXExecutionProvider", "MIGraphXEP", "migraphx"}, g_migraphxEpCatalogReady);
+        {"MIGraphXExecutionProvider", "MIGraphXEP", "migraphx", "AMD GPU", "AMDGPUExecutionProvider"}, g_migraphxEpCatalogReady);
 
       // Try to find VitisAI EP
       g_vitisaiEpLibPath = findEpLibraryPath(catalog, "VitisAI",
@@ -932,6 +945,15 @@ void NeuralNet::globalInitialize() {
     g_nvtrtRtxEpLibPath = findEpDllInDir(WINML_STORE_NVTRT_RTX_EP_DIR, "onnxruntime_providers_nv_tensorrt_rtx*.dll");
     if(!g_nvtrtRtxEpLibPath.empty())
       cout << "WinML backend: Found NvTensorRtRtx EP DLL via compile-time path (no EnsureReady!)" << endl;
+  }
+#endif
+#ifdef WINML_STORE_MIGRAPHX_EP_DIR
+  if(g_migraphxEpLibPath.empty()) {
+    g_migraphxEpLibPath = findEpDllInDir(WINML_STORE_MIGRAPHX_EP_DIR, "onnxruntime_providers_migraphx*.dll");
+    if(g_migraphxEpLibPath.empty())
+      g_migraphxEpLibPath = findEpDllInDir(WINML_STORE_MIGRAPHX_EP_DIR, "migraphx-ep.dll");
+    if(!g_migraphxEpLibPath.empty())
+      cout << "WinML backend: Found MIGraphX EP DLL via compile-time path (no EnsureReady!)" << endl;
   }
 #endif
 
@@ -1000,46 +1022,106 @@ void NeuralNet::globalCleanup() {
 
 //--------------------------------------------------------------
 
+// Providers that are always usable (built into ONNX Runtime, no Store package required).
+static const vector<string>& alwaysAvailableProviders() {
+  static const vector<string> v = {"dml", "cpu"};
+  return v;
+}
+
+// Lists the winmlProvider values actually usable on this machine right now, for error messages.
+static string listAvailableProviders() {
+  vector<string> avail = alwaysAvailableProviders();
+  if(!g_openvinoEpLibPath.empty()) avail.push_back("openvino");
+  if(!g_nvtrtRtxEpLibPath.empty()) avail.push_back("nvtensorrtrtx");
+  if(!g_migraphxEpLibPath.empty()) avail.push_back("migraphx");
+  if(!g_vitisaiEpLibPath.empty()) avail.push_back("vitisai");
+  if(!g_qnnEpLibPath.empty()) avail.push_back("qnn");
+  string s;
+  for(size_t i = 0; i < avail.size(); i++) {
+    if(i > 0) s += ", ";
+    s += avail[i];
+  }
+  return s;
+}
+
+// Lists the OpenVINO hardware device types (CPU/GPU/NPU) actually detected on this machine.
+static string listAvailableOpenVINOHardware(Ort::Env& env) {
+  vector<string> types;
+  try {
+    auto allEpDevices = env.GetEpDevices();
+    for(const auto& dev : allEpDevices) {
+      const char* epName = nullptr;
+      try { epName = dev.EpName(); } catch(...) { continue; }
+      if(!epName) continue;
+      string name(epName);
+      if(name.find("OpenVINO") == string::npos || name.find(".AUTO") != string::npos) continue;
+      string typeStr;
+      try {
+        switch(dev.Device().Type()) {
+          case OrtHardwareDeviceType_CPU: typeStr = "CPU"; break;
+          case OrtHardwareDeviceType_GPU: typeStr = "GPU"; break;
+          case OrtHardwareDeviceType_NPU: typeStr = "NPU"; break;
+          default: typeStr = ""; break;
+        }
+      } catch(...) { continue; }
+      if(!typeStr.empty() && std::find(types.begin(), types.end(), typeStr) == types.end())
+        types.push_back(typeStr);
+    }
+  } catch(...) {}
+  string s;
+  for(size_t i = 0; i < types.size(); i++) {
+    if(i > 0) s += ", ";
+    s += types[i];
+  }
+  return s;
+}
+
 ComputeContext* NeuralNet::createComputeContext(
   const std::vector<int>& gpuIdxs,
   Logger* logger,
   int nnXLen,
   int nnYLen,
-  const string& backendExtraParam,
   const string& homeDataDirOverride,
-  bool openCLReTunePerBoardSize,
   enabled_t useFP16Mode,
-  enabled_t useNHWCMode,
-  const LoadedModel* loadedModel
+  const LoadedModel* loadedModel,
+  ConfigParser& cfg
 ) {
   (void)gpuIdxs;
   (void)homeDataDirOverride;
-  (void)openCLReTunePerBoardSize;
   (void)useFP16Mode;
-  (void)useNHWCMode;
   (void)loadedModel;
 
-  // Parse backendExtraParam as "key=value;key=value;..."
-  string providerName = "dml";  // Default to DirectML
-  map<string, string> params;
-  if(!backendExtraParam.empty()) {
-    vector<string> parts = Global::split(backendExtraParam, ';');
-    for(const string& part : parts) {
-      size_t eq = part.find('=');
-      if(eq != string::npos) {
-        string key = Global::trim(part.substr(0, eq));
-        string val = Global::trim(part.substr(eq + 1));
-        params[key] = val;
-      } else {
-        string trimmed = Global::trim(part);
-        if(!trimmed.empty())
-          providerName = trimmed;
-      }
-    }
-    if(params.count("provider"))
-      providerName = params["provider"];
+  // No default provider: winmlProvider must be explicitly set in the config or via -override-config.
+  string providerName = cfg.contains("winmlProvider") ? Global::toLower(cfg.getString("winmlProvider")) : "";
+
+  if(providerName.empty()) {
+    throw StringError(
+      "WinML backend: no winmlProvider specified in config or -override-config. "
+      "Available providers on this machine: " + listAvailableProviders());
   }
-  providerName = Global::toLower(providerName);
+
+  bool isKnownPluginProvider =
+    providerName == "openvino" || providerName == "nvtensorrtrtx" ||
+    providerName == "migraphx" || providerName == "vitisai" || providerName == "qnn";
+  bool isAlwaysAvailable = providerName == "dml" || providerName == "cpu";
+  if(isKnownPluginProvider) {
+    bool ready =
+      (providerName == "openvino" && !g_openvinoEpLibPath.empty()) ||
+      (providerName == "nvtensorrtrtx" && !g_nvtrtRtxEpLibPath.empty()) ||
+      (providerName == "migraphx" && !g_migraphxEpLibPath.empty()) ||
+      (providerName == "vitisai" && !g_vitisaiEpLibPath.empty()) ||
+      (providerName == "qnn" && !g_qnnEpLibPath.empty());
+    if(!ready) {
+      throw StringError(
+        "WinML backend: requested provider '" + providerName + "' is not available on this machine. "
+        "Available providers on this machine: " + listAvailableProviders());
+    }
+  } else if(!isAlwaysAvailable) {
+    throw StringError(
+      "WinML backend: unknown winmlProvider '" + providerName + "', expected 'cpu', 'dml', 'openvino', "
+      "'nvtensorrtrtx', 'migraphx', 'qnn', or 'vitisai'. "
+      "Available providers on this machine: " + listAvailableProviders());
+  }
 
   if(logger != NULL)
     logger->write("WinML backend: creating compute context for " +
@@ -1048,25 +1130,34 @@ ComputeContext* NeuralNet::createComputeContext(
 
   ComputeContext* ctx = new ComputeContext(nnXLen, nnYLen, providerName);
 
-  // Apply configured node names
-  if(params.count("inputSpatial")) ctx->inputSpatialName = params["inputSpatial"];
-  if(params.count("inputGlobal")) ctx->inputGlobalName = params["inputGlobal"];
-  if(params.count("inputMeta")) ctx->inputMetaName = params["inputMeta"];
-  if(params.count("outputPolicy")) ctx->outputPolicyName = params["outputPolicy"];
-  if(params.count("outputValue")) ctx->outputValueName = params["outputValue"];
-  if(params.count("outputMiscvalue")) ctx->outputMiscvalueName = params["outputMiscvalue"];
-  if(params.count("outputOwnership")) ctx->outputOwnershipName = params["outputOwnership"];
-  if(params.count("openvinoDeviceType")) ctx->openvinoDeviceType = params["openvinoDeviceType"];
-  if(params.count("openvinoDeviceId")) ctx->openvinoDeviceId = params["openvinoDeviceId"];
-  if(params.count("openvinoEnableNPUFastCompile")) {
-    string v = Global::toLower(params["openvinoEnableNPUFastCompile"]);
-    ctx->openvinoEnableNPUFastCompile = (v == "1" || v == "true" || v == "yes" || v == "on");
-  }
-  if(params.count("openvinoCacheDir")) ctx->openvinoCacheDir = params["openvinoCacheDir"];
-  if(params.count("modelVersion")) {
-    int v = Global::stringToInt(params["modelVersion"]);
+  // Apply configured node names / options, read directly off cfg.
+  if(cfg.contains("winmlInputMask")) ctx->inputMaskName = cfg.getString("winmlInputMask");
+  if(cfg.contains("winmlInputSpatial")) ctx->inputSpatialName = cfg.getString("winmlInputSpatial");
+  if(cfg.contains("winmlInputGlobal")) ctx->inputGlobalName = cfg.getString("winmlInputGlobal");
+  if(cfg.contains("winmlInputMeta")) ctx->inputMetaName = cfg.getString("winmlInputMeta");
+  if(cfg.contains("winmlOutputPolicyPass")) ctx->outputPolicyPassName = cfg.getString("winmlOutputPolicyPass");
+  if(cfg.contains("winmlOutputPolicy")) ctx->outputPolicyName = cfg.getString("winmlOutputPolicy");
+  if(cfg.contains("winmlOutputValue")) ctx->outputValueName = cfg.getString("winmlOutputValue");
+  if(cfg.contains("winmlOutputMiscvalue")) ctx->outputMiscvalueName = cfg.getString("winmlOutputMiscvalue");
+  if(cfg.contains("winmlOutputOwnership")) ctx->outputOwnershipName = cfg.getString("winmlOutputOwnership");
+  if(cfg.contains("winmlOpenVINODeviceType")) ctx->openvinoDeviceType = cfg.getString("winmlOpenVINODeviceType");
+  if(cfg.contains("winmlOpenVINODeviceId")) ctx->openvinoDeviceId = cfg.getString("winmlOpenVINODeviceId");
+  if(cfg.contains("winmlOpenVINOEnableNPUFastCompile"))
+    ctx->openvinoEnableNPUFastCompile = cfg.getBool("winmlOpenVINOEnableNPUFastCompile");
+  if(cfg.contains("winmlOpenVINOCacheDir")) ctx->openvinoCacheDir = cfg.getString("winmlOpenVINOCacheDir");
+  if(cfg.contains("winmlModelVersion")) {
+    int v = Global::stringToInt(cfg.getString("winmlModelVersion"));
     if(v >= 0)
       ctx->configModelVersion = v;
+  }
+
+  // The openvino provider requires an explicit hardware sub-selection (CPU/GPU/NPU) -
+  // no silent default, since silently picking e.g. NPU when the user wanted GPU is surprising.
+  if(providerName == "openvino" && !cfg.contains("winmlOpenVINODeviceType")) {
+    throw StringError(
+      "WinML backend: provider 'openvino' requires winmlOpenVINODeviceType to be set explicitly "
+      "(cpu, gpu, or npu) in the config or via -override-config. "
+      "Available OpenVINO hardware on this machine: " + listAvailableOpenVINOHardware(ctx->env));
   }
 
   return ctx;
@@ -1169,7 +1260,6 @@ void NeuralNet::getOutput(
   // Helper lambda to run inference for a contiguous sub-batch starting at `startRow` with `subBatchSize` rows,
   // then write results into `outputs`.
   const ComputeContext* ctx = computeHandle->context;
-  const int policyResultLen = computeHandle->policyResultLen;
   const int spatialPolicyLen = nnXLen * nnYLen;
 
   int spatialIdx = findNameIndex(computeHandle->inputNames, {ctx->inputSpatialName});
@@ -1177,17 +1267,27 @@ void NeuralNet::getOutput(
   if(spatialIdx < 0 || globalIdx < 0)
     throw StringError("WinML backend: could not find expected input names");
 
+  // InputMask (the on-board mask, [N,1,H,W]) is required by graphs built by OnnxModelBuilder::build()
+  // (used for .bin.gz models), but may be absent from hand-exported raw .onnx models - only require
+  // it if the session actually declares it.
+  int maskIdx = findNameIndex(computeHandle->inputNames, {ctx->inputMaskName});
+
   int metaIdx = -1;
   if(computeHandle->numInputMetaChannels > 0) {
     metaIdx = findNameIndex(computeHandle->inputNames, {ctx->inputMetaName});
     if(metaIdx < 0)
-      throw StringError("WinML backend: model has metadata channels but could not find input_meta");
+      throw StringError("WinML backend: model has metadata channels but could not find " + ctx->inputMetaName);
   }
 
+  // OutputPolicyPass ([N,C]) and OutputPolicy ([N,C,H,W]) are separate tensors in graphs built by
+  // OnnxModelBuilder::build() - the pass logit isn't appended to the spatial policy tensor.
+  int policyPassOutputIdx = findNameIndex(computeHandle->outputNames, {ctx->outputPolicyPassName});
   int policyOutputIdx = findNameIndex(computeHandle->outputNames, {ctx->outputPolicyName});
   int valueOutputIdx = findNameIndex(computeHandle->outputNames, {ctx->outputValueName});
   int miscvalueOutputIdx = findNameIndex(computeHandle->outputNames, {ctx->outputMiscvalueName});
   int ownershipOutputIdx = findNameIndex(computeHandle->outputNames, {ctx->outputOwnershipName});
+  if(policyPassOutputIdx < 0)
+    throw StringError("WinML backend: could not find policy-pass output node '" + ctx->outputPolicyPassName + "'");
   if(policyOutputIdx < 0)
     throw StringError("WinML backend: could not find policy output node '" + ctx->outputPolicyName + "'");
   if(valueOutputIdx < 0)
@@ -1219,7 +1319,8 @@ void NeuralNet::getOutput(
       spatialShape.data(), spatialShape.size()
     );
 
-    std::array<int64_t, 2> globalShape = {inferBatchSize, numGlobalFeatures};
+    // NC11 (rank 4), matching OnnxModelBuilder::build()'s addInputNC11("InputGlobal", ...).
+    std::array<int64_t, 4> globalShape = {inferBatchSize, numGlobalFeatures, 1, 1};
     Ort::Value globalTensor = Ort::Value::CreateTensor<float>(
       memInfo, inputBuffers->globalInput.data() + (inputBuffers->singleInputGlobalElts * startRow),
       inputBuffers->singleInputGlobalElts * inferBatchSize,
@@ -1228,11 +1329,28 @@ void NeuralNet::getOutput(
 
     Ort::Value metaTensor(nullptr);
     if(computeHandle->numInputMetaChannels > 0) {
-      std::array<int64_t, 2> metaShape = {inferBatchSize, computeHandle->numInputMetaChannels};
+      // NC11 (rank 4), matching trtbackend.cpp's InputMeta declaration.
+      std::array<int64_t, 4> metaShape = {inferBatchSize, computeHandle->numInputMetaChannels, 1, 1};
       metaTensor = Ort::Value::CreateTensor<float>(
         memInfo, inputBuffers->metaInput.data() + (inputBuffers->singleInputMetaElts * startRow),
         inputBuffers->singleInputMetaElts * inferBatchSize,
         metaShape.data(), metaShape.size()
+      );
+    }
+
+    // The mask is channel 0 of the spatial input (KataGo convention: always the on-board mask),
+    // but is not contiguous across rows within the spatial buffer, so gather it into its own buffer.
+    vector<float> maskBuf;
+    Ort::Value maskTensor(nullptr);
+    if(maskIdx >= 0) {
+      maskBuf.resize((size_t)inferBatchSize * spatialPolicyLen);
+      for(int r = 0; r < inferBatchSize; r++) {
+        const float* rowSpatial = inputBuffers->spatialInput.data() + inputBuffers->singleInputElts * (startRow + r);
+        std::copy(rowSpatial, rowSpatial + spatialPolicyLen, maskBuf.data() + (size_t)r * spatialPolicyLen);
+      }
+      std::array<int64_t, 4> maskShape = {inferBatchSize, 1, nnYLen, nnXLen};
+      maskTensor = Ort::Value::CreateTensor<float>(
+        memInfo, maskBuf.data(), maskBuf.size(), maskShape.data(), maskShape.size()
       );
     }
 
@@ -1245,9 +1363,11 @@ void NeuralNet::getOutput(
         inputTensors.push_back(std::move(globalTensor));
       else if((int)i == metaIdx)
         inputTensors.push_back(std::move(metaTensor));
+      else if((int)i == maskIdx)
+        inputTensors.push_back(std::move(maskTensor));
       else {
         throw StringError("WinML backend: unexpected input node '" + computeHandle->inputNames[i] +
-                           "' -- only spatial, global, and meta inputs are supported");
+                           "' -- only mask, spatial, global, and meta inputs are supported");
       }
     }
 
@@ -1261,11 +1381,13 @@ void NeuralNet::getOutput(
       computeHandle->outputNamePtrs.size()
     );
 
+    const float* policyPassData = outputTensors[policyPassOutputIdx].GetTensorData<float>();
     const float* policyData = outputTensors[policyOutputIdx].GetTensorData<float>();
     const float* valueData = outputTensors[valueOutputIdx].GetTensorData<float>();
     const float* miscvalueData = outputTensors[miscvalueOutputIdx].GetTensorData<float>();
     const float* ownershipData = outputTensors[ownershipOutputIdx].GetTensorData<float>();
 
+    assert(policyPassData != nullptr);
     assert(policyData != nullptr);
     assert(valueData != nullptr);
     assert(miscvalueData != nullptr);
@@ -1278,26 +1400,28 @@ void NeuralNet::getOutput(
       assert(output->nnYLen == nnYLen);
       float policyOptimism = (float)inputBufs[row]->policyOptimism;
 
-      // Policy: [N, C, H*W+1]
+      // Policy: OutputPolicy is [N, C, H*W] (channel-major, NCHW), OutputPolicyPass is [N, C]
+      // (one pass logit per channel). These are two separate tensors, not a single [N,C,H*W+1].
       {
-        const float* policyRowBase = policyData + subRow * numPolicyChannels * policyResultLen;
+        const float* policyRowBase = policyData + (size_t)subRow * numPolicyChannels * spatialPolicyLen;
+        const float* policyPassRowBase = policyPassData + (size_t)subRow * numPolicyChannels;
         float* policyProbs = output->policyProbs;
 
         if(numPolicyChannels >= 2) {
           const float* ch0 = policyRowBase;
-          const float* ch1 = policyRowBase + policyResultLen;
+          const float* ch1 = policyRowBase + spatialPolicyLen;
           for(int i = 0; i < spatialPolicyLen; i++) {
             float p = ch0[i];
             float pOpt = ch1[i];
             policyProbsTmp[i] = p + (pOpt - p) * policyOptimism;
           }
           SymmetryHelpers::copyOutputsWithSymmetry(policyProbsTmp, policyProbs, 1, nnYLen, nnXLen, inputBufs[row]->symmetry);
-          policyProbs[spatialPolicyLen] = ch0[spatialPolicyLen] + (ch1[spatialPolicyLen] - ch0[spatialPolicyLen]) * policyOptimism;
+          policyProbs[spatialPolicyLen] = policyPassRowBase[0] + (policyPassRowBase[1] - policyPassRowBase[0]) * policyOptimism;
         } else {
           assert(numPolicyChannels == 1);
           const float* ch0 = policyRowBase;
           SymmetryHelpers::copyOutputsWithSymmetry(ch0, policyProbs, 1, nnYLen, nnXLen, inputBufs[row]->symmetry);
-          policyProbs[spatialPolicyLen] = ch0[spatialPolicyLen];
+          policyProbs[spatialPolicyLen] = policyPassRowBase[0];
         }
       }
 
