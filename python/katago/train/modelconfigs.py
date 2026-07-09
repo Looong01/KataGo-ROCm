@@ -40,20 +40,21 @@ ModelConfig = Dict[str,Any]
 # version = 14 # V7 features, Squared softplus for error variance predictions
 # version = 15 # V7 features, Extra nonlinearity for pass output
 # version = 16 # V7 features, Q value predictions in the policy head
+# version = 17 # V7 features, Q value predictions made optional (config "predict_q_values"), introduced transformers and added guards to unused params
 
 def get_version(config: ModelConfig):
     return config["version"]
 
 def get_num_bin_input_features(config: ModelConfig):
     version = get_version(config)
-    if version == 10 or version == 11 or version == 12 or version == 13 or version == 14 or version == 15 or version == 16:
+    if version == 10 or version == 11 or version == 12 or version == 13 or version == 14 or version == 15 or version == 16 or version == 17:
         return 22
     else:
         assert(False)
 
 def get_num_global_input_features(config: ModelConfig):
     version = get_version(config)
-    if version == 10 or version == 11 or version == 12 or version == 13 or version == 14 or version == 15 or version == 16:
+    if version == 10 or version == 11 or version == 12 or version == 13 or version == 14 or version == 15 or version == 16 or version == 17:
         return 19
     else:
         assert(False)
@@ -80,9 +81,7 @@ b1c6nbt = {
     "trunk_num_channels":6,
     "mid_num_channels":4,
     "gpool_num_channels":4,
-    "use_attention_pool":False,
     "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":2,
     "block_kind": [
         ["rconv1","bottlenest2"],
     ],
@@ -103,9 +102,7 @@ b2c16 = {
     "trunk_num_channels":16,
     "mid_num_channels":16,
     "gpool_num_channels":8,
-    "use_attention_pool":False,
     "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":2,
     "block_kind": [
         ["rconv1","regular"],
         ["rconv2","regulargpool"],
@@ -127,9 +124,7 @@ b4c32 = {
     "trunk_num_channels":32,
     "mid_num_channels":32,
     "gpool_num_channels":16,
-    "use_attention_pool":False,
     "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":2,
     "block_kind": [
         ["rconv1","regular"],
         ["rconv2","regular"],
@@ -153,9 +148,7 @@ b6c96 = {
     "trunk_num_channels":96,
     "mid_num_channels":96,
     "gpool_num_channels":32,
-    "use_attention_pool":False,
     "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
     "block_kind": [
         ["rconv1","regular"],
         ["rconv2","regular"],
@@ -181,9 +174,7 @@ b10c128 = {
     "trunk_num_channels":128,
     "mid_num_channels":128,
     "gpool_num_channels":32,
-    "use_attention_pool":False,
     "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
     "block_kind": [
         ["rconv1","regular"],
         ["rconv2","regular"],
@@ -213,9 +204,7 @@ b5c192nbt = {
     "trunk_num_channels":192,
     "mid_num_channels":96,
     "gpool_num_channels":32,
-    "use_attention_pool":False,
     "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
     "block_kind": [
         ["rconv1","bottlenest2"],
         ["rconv2","bottlenest2gpool"],
@@ -240,9 +229,7 @@ b8c192nbt = {
     "trunk_num_channels":192,
     "mid_num_channels":96,
     "gpool_num_channels":32,
-    "use_attention_pool":False,
     "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
     "block_kind": [
         ["rconv1","bottlenest2"],
         ["rconv2","bottlenest2"],
@@ -270,9 +257,7 @@ b15c192 = {
     "trunk_num_channels":192,
     "mid_num_channels":192,
     "gpool_num_channels":64,
-    "use_attention_pool":False,
     "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
     "block_kind": [
         ["rconv1","regular"],
         ["rconv2","regular"],
@@ -307,9 +292,7 @@ b10c256nbt = {
     "trunk_num_channels":256,
     "mid_num_channels":128,
     "gpool_num_channels":64,
-    "use_attention_pool":False,
     "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
     "block_kind": [
         ["rconv1","bottlenest2"],
         ["rconv2","bottlenest2"],
@@ -339,9 +322,7 @@ b20c256 = {
     "trunk_num_channels":256,
     "mid_num_channels":256,
     "gpool_num_channels":64,
-    "use_attention_pool":False,
     "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
     "block_kind": [
         ["rconv1","regular"],
         ["rconv2","regular"],
@@ -372,104 +353,6 @@ b20c256 = {
     "v2_size":112,
 }
 
-b30c256bt = {
-    "version":15,
-    "norm_kind":"fixup",
-    "bnorm_epsilon": 1e-4,
-    "bnorm_running_avg_momentum": 0.001,
-    "initial_conv_1x1": False,
-    "trunk_num_channels":256,
-    "mid_num_channels":128,
-    "gpool_num_channels":64,
-    "use_attention_pool":False,
-    "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
-    "block_kind": [
-        ["rconv0","bottle"],
-        ["rconv1","bottle"],
-        ["rconv2","bottle"],
-        ["rconv3","bottle"],
-        ["rconv4","bottle"],
-        ["rconv5","bottle"],
-        ["rconv6","bottlegpool"],
-        ["rconv7","bottle"],
-        ["rconv8","bottle"],
-        ["rconv9","bottle"],
-        ["rconv10","bottle"],
-        ["rconv11","bottle"],
-        ["rconv12","bottlegpool"],
-        ["rconv13","bottle"],
-        ["rconv14","bottle"],
-        ["rconv15","bottle"],
-        ["rconv16","bottle"],
-        ["rconv17","bottle"],
-        ["rconv18","bottlegpool"],
-        ["rconv19","bottle"],
-        ["rconv20","bottle"],
-        ["rconv21","bottle"],
-        ["rconv22","bottle"],
-        ["rconv23","bottle"],
-        ["rconv24","bottlegpool"],
-        ["rconv25","bottle"],
-        ["rconv26","bottle"],
-        ["rconv27","bottle"],
-        ["rconv28","bottle"],
-        ["rconv29","bottle"],
-    ],
-    "p1_num_channels":48,
-    "g1_num_channels":48,
-    "v1_num_channels":48,
-    "sbv2_num_channels":96,
-    "num_scorebeliefs":8,
-    "v2_size":112,
-}
-
-b24c320bt = {
-    "version":15,
-    "norm_kind":"fixup",
-    "bnorm_epsilon": 1e-4,
-    "bnorm_running_avg_momentum": 0.001,
-    "initial_conv_1x1": False,
-    "trunk_num_channels":320,
-    "mid_num_channels":160,
-    "gpool_num_channels":64,
-    "use_attention_pool":False,
-    "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
-    "block_kind": [
-        ["rconv1","bottle"],
-        ["rconv2","bottle"],
-        ["rconv3","bottle"],
-        ["rconv4","bottle"],
-        ["rconv5","bottle"],
-        ["rconv6","bottle"],
-        ["rconv7","bottlegpool"],
-        ["rconv8","bottle"],
-        ["rconv9","bottle"],
-        ["rconv10","bottle"],
-        ["rconv11","bottle"],
-        ["rconv12","bottle"],
-        ["rconv13","bottlegpool"],
-        ["rconv14","bottle"],
-        ["rconv15","bottle"],
-        ["rconv16","bottle"],
-        ["rconv17","bottle"],
-        ["rconv18","bottle"],
-        ["rconv19","bottlegpool"],
-        ["rconv20","bottle"],
-        ["rconv21","bottle"],
-        ["rconv22","bottle"],
-        ["rconv23","bottle"],
-        ["rconv24","bottle"],
-    ],
-    "p1_num_channels":48,
-    "g1_num_channels":48,
-    "v1_num_channels":48,
-    "sbv2_num_channels":96,
-    "num_scorebeliefs":8,
-    "v2_size":112,
-}
-
 b20c384bt = {
     "version":15,
     "norm_kind":"fixup",
@@ -479,9 +362,7 @@ b20c384bt = {
     "trunk_num_channels":384,
     "mid_num_channels":192,
     "gpool_num_channels":64,
-    "use_attention_pool":False,
     "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
     "block_kind": [
         ["rconv1","bottle"],
         ["rconv2","bottle"],
@@ -513,39 +394,6 @@ b20c384bt = {
 }
 
 
-b10c512lbt = {
-    "version":15,
-    "norm_kind":"fixup",
-    "bnorm_epsilon": 1e-4,
-    "bnorm_running_avg_momentum": 0.001,
-    "initial_conv_1x1": False,
-    "trunk_num_channels":512,
-    "mid_num_channels":256,
-    "gpool_num_channels":128,
-    "use_attention_pool":False,
-    "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
-    "block_kind": [
-        ["rconv1","bottle2"],
-        ["rconv2","bottle2"],
-        ["rconv3","bottle2"],
-        ["rconv4","bottle2gpool"],
-        ["rconv5","bottle2"],
-        ["rconv6","bottle2"],
-        ["rconv7","bottle2"],
-        ["rconv8","bottle2gpool"],
-        ["rconv9","bottle2"],
-        ["rconv10","bottle2"],
-    ],
-    "p1_num_channels":48,
-    "g1_num_channels":48,
-    "v1_num_channels":48,
-    "sbv2_num_channels":96,
-    "num_scorebeliefs":8,
-    "v2_size":112,
-}
-
-
 b15c384lbt = {
     "version":15,
     "norm_kind":"fixup",
@@ -555,9 +403,7 @@ b15c384lbt = {
     "trunk_num_channels":384,
     "mid_num_channels":192,
     "gpool_num_channels":64,
-    "use_attention_pool":False,
     "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
     "block_kind": [
         ["rconv1","bottle2"],
         ["rconv2","bottle2"],
@@ -574,125 +420,6 @@ b15c384lbt = {
         ["rconv13","bottle2"],
         ["rconv14","bottle2"],
         ["rconv15","bottle2"],
-    ],
-    "p1_num_channels":48,
-    "g1_num_channels":48,
-    "v1_num_channels":48,
-    "sbv2_num_channels":96,
-    "num_scorebeliefs":8,
-    "v2_size":112,
-}
-
-b18c320lbt = {
-    "version":15,
-    "norm_kind":"fixup",
-    "bnorm_epsilon": 1e-4,
-    "bnorm_running_avg_momentum": 0.001,
-    "initial_conv_1x1": False,
-    "trunk_num_channels":320,
-    "mid_num_channels":160,
-    "gpool_num_channels":64,
-    "use_attention_pool":False,
-    "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
-    "block_kind": [
-        ["rconv1","bottle2"],
-        ["rconv2","bottle2"],
-        ["rconv3","bottle2"],
-        ["rconv4","bottle2"],
-        ["rconv5","bottle2gpool"],
-        ["rconv6","bottle2"],
-        ["rconv7","bottle2"],
-        ["rconv8","bottle2"],
-        ["rconv9","bottle2"],
-        ["rconv10","bottle2gpool"],
-        ["rconv11","bottle2"],
-        ["rconv12","bottle2"],
-        ["rconv13","bottle2"],
-        ["rconv14","bottle2"],
-        ["rconv15","bottle2gpool"],
-        ["rconv16","bottle2"],
-        ["rconv17","bottle2"],
-        ["rconv18","bottle2"],
-    ],
-    "p1_num_channels":48,
-    "g1_num_channels":48,
-    "v1_num_channels":48,
-    "sbv2_num_channels":96,
-    "num_scorebeliefs":8,
-    "v2_size":112,
-}
-
-b23c256lbt = {
-    "version":15,
-    "norm_kind":"fixup",
-    "bnorm_epsilon": 1e-4,
-    "bnorm_running_avg_momentum": 0.001,
-    "initial_conv_1x1": False,
-    "trunk_num_channels":256,
-    "mid_num_channels":128,
-    "gpool_num_channels":64,
-    "use_attention_pool":False,
-    "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
-    "block_kind": [
-        ["rconv1","bottle2"],
-        ["rconv2","bottle2"],
-        ["rconv3","bottle2"],
-        ["rconv4","bottle2"],
-        ["rconv5","bottle2"],
-        ["rconv6","bottle2gpool"],
-        ["rconv7","bottle2"],
-        ["rconv8","bottle2"],
-        ["rconv9","bottle2"],
-        ["rconv10","bottle2"],
-        ["rconv11","bottle2"],
-        ["rconv12","bottle2gpool"],
-        ["rconv13","bottle2"],
-        ["rconv14","bottle2"],
-        ["rconv15","bottle2"],
-        ["rconv16","bottle2"],
-        ["rconv17","bottle2"],
-        ["rconv18","bottle2gpool"],
-        ["rconv19","bottle2"],
-        ["rconv20","bottle2"],
-        ["rconv21","bottle2"],
-        ["rconv22","bottle2"],
-        ["rconv23","bottle2"],
-    ],
-    "p1_num_channels":48,
-    "g1_num_channels":48,
-    "v1_num_channels":48,
-    "sbv2_num_channels":96,
-    "num_scorebeliefs":8,
-    "v2_size":112,
-}
-
-b12c384llbt = {
-    "version":15,
-    "norm_kind":"fixup",
-    "bnorm_epsilon": 1e-4,
-    "bnorm_running_avg_momentum": 0.001,
-    "initial_conv_1x1": False,
-    "trunk_num_channels":384,
-    "mid_num_channels":192,
-    "gpool_num_channels":64,
-    "use_attention_pool":False,
-    "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
-    "block_kind": [
-        ["rconv1","bottle3"],
-        ["rconv2","bottle3"],
-        ["rconv3","bottle3"],
-        ["rconv4","bottle3gpool"],
-        ["rconv5","bottle3"],
-        ["rconv6","bottle3"],
-        ["rconv7","bottle3gpool"],
-        ["rconv8","bottle3"],
-        ["rconv9","bottle3"],
-        ["rconv10","bottle3gpool"],
-        ["rconv11","bottle3"],
-        ["rconv12","bottle3"],
     ],
     "p1_num_channels":48,
     "g1_num_channels":48,
@@ -712,9 +439,7 @@ b10c384nbt = {
     "trunk_num_channels":384,
     "mid_num_channels":192,
     "gpool_num_channels":64,
-    "use_attention_pool":False,
     "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
     "block_kind": [
         ["rconv1","bottlenest2"],
         ["rconv2","bottlenest2"],
@@ -745,9 +470,7 @@ b10c480nb3t = {
     "trunk_num_channels":480,
     "mid_num_channels":160,
     "gpool_num_channels":64,
-    "use_attention_pool":False,
     "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
     "block_kind": [
         ["rconv1","bottlenest2"],
         ["rconv2","bottlenest2"],
@@ -769,107 +492,6 @@ b10c480nb3t = {
 }
 
 
-b7c384lnbt = {
-    "version":15,
-    "norm_kind":"fixup",
-    "bnorm_epsilon": 1e-4,
-    "bnorm_running_avg_momentum": 0.001,
-    "initial_conv_1x1": False,
-    "trunk_num_channels":384,
-    "mid_num_channels":192,
-    "gpool_num_channels":64,
-    "use_attention_pool":False,
-    "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
-    "block_kind": [
-        ["rconv1","bottlenest3"],
-        ["rconv3","bottlenest3gpool"],
-        ["rconv5","bottlenest3"],
-        ["rconv6","bottlenest3gpool"],
-        ["rconv8","bottlenest3"],
-        ["rconv9","bottlenest3gpool"],
-        ["rconv10","bottlenest3"],
-    ],
-    "p1_num_channels":48,
-    "g1_num_channels":48,
-    "v1_num_channels":48,
-    "sbv2_num_channels":96,
-    "num_scorebeliefs":8,
-    "v2_size":112,
-}
-
-b5c512nnbt = {
-    "version":15,
-    "norm_kind":"fixup",
-    "bnorm_epsilon": 1e-4,
-    "bnorm_running_avg_momentum": 0.001,
-    "initial_conv_1x1": True,
-    "trunk_num_channels":512,
-    "outermid_num_channels":256,
-    "mid_num_channels":128,
-    "gpool_num_channels":64,
-    "use_attention_pool":False,
-    "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
-    "block_kind": [
-        ["rconv1","bottlenest2bottlenest2"],
-        ["rconv2","bottlenest2bottlenest2gpool"],
-        ["rconv3","bottlenest2bottlenest2"],
-        ["rconv4","bottlenest2bottlenest2gpool"],
-        ["rconv5","bottlenest2bottlenest2gpool"],
-    ],
-    "p1_num_channels":48,
-    "g1_num_channels":48,
-    "v1_num_channels":48,
-    "sbv2_num_channels":96,
-    "num_scorebeliefs":8,
-    "v2_size":112,
-}
-
-
-b20c384lbt = {
-    "version":15,
-    "norm_kind":"fixup",
-    "bnorm_epsilon": 1e-4,
-    "bnorm_running_avg_momentum": 0.001,
-    "initial_conv_1x1": False,
-    "trunk_num_channels":384,
-    "mid_num_channels":192,
-    "gpool_num_channels":64,
-    "use_attention_pool":False,
-    "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
-    "block_kind": [
-        ["rconv1","bottle2"],
-        ["rconv2","bottle2"],
-        ["rconv3","bottle2"],
-        ["rconv4","bottle2"],
-        ["rconv5","bottle2"],
-        ["rconv6","bottle2gpool"],
-        ["rconv7","bottle2"],
-        ["rconv8","bottle2"],
-        ["rconv9","bottle2"],
-        ["rconv10","bottle2"],
-        ["rconv11","bottle2gpool"],
-        ["rconv12","bottle2"],
-        ["rconv13","bottle2"],
-        ["rconv14","bottle2"],
-        ["rconv15","bottle2"],
-        ["rconv16","bottle2gpool"],
-        ["rconv17","bottle2"],
-        ["rconv18","bottle2"],
-        ["rconv19","bottle2"],
-        ["rconv20","bottle2"],
-    ],
-    "p1_num_channels":48,
-    "g1_num_channels":48,
-    "v1_num_channels":48,
-    "sbv2_num_channels":96,
-    "num_scorebeliefs":8,
-    "v2_size":112,
-}
-
-
 b30c320 = {
     "version":15,
     "norm_kind":"fixup",
@@ -879,9 +501,7 @@ b30c320 = {
     "trunk_num_channels":320,
     "mid_num_channels":320,
     "gpool_num_channels":96,
-    "use_attention_pool":False,
     "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
     "block_kind": [
         ["rconv1","regular"],
         ["rconv2","regular"],
@@ -931,9 +551,7 @@ b40c256 = {
     "trunk_num_channels":256,
     "mid_num_channels":256,
     "gpool_num_channels":64,
-    "use_attention_pool":False,
     "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
     "block_kind": [
         ["rconv1","regular"],
         ["rconv2","regular"],
@@ -993,9 +611,7 @@ b18c384nbt = {
     "trunk_num_channels":384,
     "mid_num_channels":192,
     "gpool_num_channels":64,
-    "use_attention_pool":False,
     "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
     "block_kind": [
         ["rconv1","bottlenest2"],
         ["rconv2","bottlenest2"],
@@ -1033,9 +649,7 @@ b18c384dnbt1 = {
     "trunk_num_channels":384,
     "mid_num_channels":192,
     "gpool_num_channels":64,
-    "use_attention_pool":False,
     "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
     "block_kind": [
         ["rconv1","bottlenest2"],
         ["rconv2","bottlenest2"],
@@ -1064,82 +678,6 @@ b18c384dnbt1 = {
     "v2_size":128,
 }
 
-b18c384dnbt2 = {
-    "version":15,
-    "norm_kind":"fixup",
-    "bnorm_epsilon": 1e-4,
-    "bnorm_running_avg_momentum": 0.001,
-    "initial_conv_1x1": False,
-    "trunk_num_channels":384,
-    "mid_num_channels":192,
-    "gpool_num_channels":64,
-    "use_attention_pool":False,
-    "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
-    "block_kind": [
-        ["rconv1","bottlenest2"],
-        ["rconv2","bottlenest2"],
-        ["rconv3","bottlenest2gpool"],
-        ["rconv4","bottlenest2"],
-        ["rconv5","dilatedbottlenest2"],
-        ["rconv6","bottlenest2gpool"],
-        ["rconv7","bottlenest2"],
-        ["rconv8","bottlenest2"],
-        ["rconv9","bottlenest2gpool"],
-        ["rconv10","bottlenest2"],
-        ["rconv11","bottlenest2"],
-        ["rconv12","bottlenest2gpool"],
-        ["rconv13","dilatedbottlenest2"],
-        ["rconv14","bottlenest2"],
-        ["rconv15","bottlenest2gpool"],
-        ["rconv16","bottlenest2"],
-        ["rconv17","bottlenest2"],
-        ["rconv18","bottlenest2"],
-    ],
-    "p1_num_channels":48,
-    "g1_num_channels":48,
-    "v1_num_channels":96,
-    "sbv2_num_channels":112,
-    "num_scorebeliefs":8,
-    "v2_size":128,
-}
-
-b14c448nbt = {
-    "version":15,
-    "norm_kind":"fixup",
-    "bnorm_epsilon": 1e-4,
-    "bnorm_running_avg_momentum": 0.001,
-    "initial_conv_1x1": False,
-    "trunk_num_channels":448,
-    "mid_num_channels":224,
-    "gpool_num_channels":64,
-    "use_attention_pool":False,
-    "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
-    "block_kind": [
-        ["rconv1","bottlenest2"],
-        ["rconv2","bottlenest2"],
-        ["rconv3","bottlenest2gpool"],
-        ["rconv4","bottlenest2"],
-        ["rconv5","bottlenest2"],
-        ["rconv6","bottlenest2gpool"],
-        ["rconv7","bottlenest2"],
-        ["rconv8","bottlenest2"],
-        ["rconv9","bottlenest2gpool"],
-        ["rconv10","bottlenest2"],
-        ["rconv11","bottlenest2"],
-        ["rconv12","bottlenest2gpool"],
-        ["rconv13","bottlenest2"],
-        ["rconv14","bottlenest2"],
-    ],
-    "p1_num_channels":48,
-    "g1_num_channels":48,
-    "v1_num_channels":96,
-    "sbv2_num_channels":112,
-    "num_scorebeliefs":8,
-    "v2_size":128,
-}
-
 b40c384 = {
     "version":15,
     "norm_kind":"fixup",
@@ -1149,9 +687,7 @@ b40c384 = {
     "trunk_num_channels":384,
     "mid_num_channels":384,
     "gpool_num_channels":128,
-    "use_attention_pool":False,
     "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
     "block_kind": [
         ["rconv1","regular"],
         ["rconv2","regular"],
@@ -1212,9 +748,7 @@ b60c320 = {
     "trunk_num_channels":320,
     "mid_num_channels":320,
     "gpool_num_channels":96,
-    "use_attention_pool":False,
     "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
     "block_kind": [
         ["rconv1","regular"],
         ["rconv2","regular"],
@@ -1286,69 +820,6 @@ b60c320 = {
 }
 
 
-b41c384nbt = {
-    "version":15,
-    "norm_kind":"fixup",
-    "bnorm_epsilon": 1e-4,
-    "bnorm_running_avg_momentum": 0.001,
-    "initial_conv_1x1": False,
-    "trunk_num_channels":384,
-    "mid_num_channels":192,
-    "gpool_num_channels":64,
-    "use_attention_pool":False,
-    "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
-    "block_kind": [
-        ["rconv1","bottlenest2"],
-        ["rconv2","bottlenest2"],
-        ["rconv3","bottlenest2gpool"],
-        ["rconv4","bottlenest2"],
-        ["rconv5","bottlenest2"],
-        ["rconv6","bottlenest2gpool"],
-        ["rconv7","bottlenest2"],
-        ["rconv8","bottlenest2"],
-        ["rconv9","bottlenest2gpool"],
-        ["rconv10","bottlenest2"],
-        ["rconv11","bottlenest2"],
-        ["rconv12","bottlenest2gpool"],
-        ["rconv13","bottlenest2"],
-        ["rconv14","bottlenest2"],
-        ["rconv15","bottlenest2gpool"],
-        ["rconv16","bottlenest2"],
-        ["rconv17","bottlenest2"],
-        ["rconv18","bottlenest2gpool"],
-        ["rconv19","bottlenest2"],
-        ["rconv20","bottlenest2"],
-        ["rconv21","bottlenest2gpool"],
-        ["rconv22","bottlenest2"],
-        ["rconv23","bottlenest2"],
-        ["rconv24","bottlenest2gpool"],
-        ["rconv25","bottlenest2"],
-        ["rconv26","bottlenest2"],
-        ["rconv27","bottlenest2gpool"],
-        ["rconv28","bottlenest2"],
-        ["rconv29","bottlenest2"],
-        ["rconv30","bottlenest2gpool"],
-        ["rconv31","bottlenest2"],
-        ["rconv32","bottlenest2"],
-        ["rconv33","bottlenest2gpool"],
-        ["rconv34","bottlenest2"],
-        ["rconv35","bottlenest2"],
-        ["rconv36","bottlenest2gpool"],
-        ["rconv37","bottlenest2"],
-        ["rconv38","bottlenest2"],
-        ["rconv39","bottlenest2gpool"],
-        ["rconv40","bottlenest2"],
-        ["rconv41","bottlenest2"],
-    ],
-    "p1_num_channels":64,
-    "g1_num_channels":64,
-    "v1_num_channels":96,
-    "sbv2_num_channels":128,
-    "num_scorebeliefs":8,
-    "v2_size":144,
-}
-
 b32c448nbt = {
     "version":15,
     "norm_kind":"fixup",
@@ -1358,9 +829,7 @@ b32c448nbt = {
     "trunk_num_channels":448,
     "mid_num_channels":224,
     "gpool_num_channels":64,
-    "use_attention_pool":False,
     "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
     "block_kind": [
         ["rconv1","bottlenest2"],
         ["rconv2","bottlenest2"],
@@ -1413,9 +882,7 @@ b28c512nbt = {
     "trunk_num_channels":512,
     "mid_num_channels":256,
     "gpool_num_channels":64,
-    "use_attention_pool":False,
     "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
     "block_kind": [
         ["rconv1","bottlenest2"],
         ["rconv2","bottlenest2"],
@@ -1454,6 +921,28 @@ b28c512nbt = {
     "v2_size":144,
 }
 
+b40c768nbt = {
+    "version":15,
+    "norm_kind":"fixup",
+    "bnorm_epsilon": 1e-4,
+    "bnorm_running_avg_momentum": 0.001,
+    "initial_conv_1x1": False,
+    "trunk_num_channels":768,
+    "mid_num_channels":384,
+    "gpool_num_channels":128,
+    "gamma_weight_decay_center_1":True,
+    "block_kind": [
+        [f"rconv{i}", "bottlenest2gpool" if i % 3 == 0 else "bottlenest2"]
+        for i in range(1, 41)
+    ],
+    "p1_num_channels":128,
+    "g1_num_channels":128,
+    "v1_num_channels":256,
+    "sbv2_num_channels":256,
+    "num_scorebeliefs":8,
+    "v2_size":256,
+}
+
 b20c640nbt = {
     "version":15,
     "norm_kind":"fixup",
@@ -1463,9 +952,7 @@ b20c640nbt = {
     "trunk_num_channels":640,
     "mid_num_channels":320,
     "gpool_num_channels":96,
-    "use_attention_pool":False,
     "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
     "block_kind": [
         ["rconv1","bottlenest2"],
         ["rconv2","bottlenest2"],
@@ -1496,59 +983,30 @@ b20c640nbt = {
     "v2_size":144,
 }
 
-sandbox = {
-    "version":15,
+b5c48h3tfr = {
+    "version":17,
     "norm_kind":"fixup",
     "bnorm_epsilon": 1e-4,
     "bnorm_running_avg_momentum": 0.001,
     "initial_conv_1x1": False,
-    "trunk_num_channels":256,
-    "mid_num_channels":256,
-    "gpool_num_channels":64,
-    "use_attention_pool":False,
     "gamma_weight_decay_center_1":True,
-    "num_attention_pool_heads":4,
-    "block_kind": [
-        ["rconv1","regular"],
-        ["rconv2","regular"],
-        ["rconv3","regular"],
-        ["rconv4","regular"],
-        ["rconv5","regular"],
-        ["rconv6","regular"],
-        ["rconv7","regulargpool"],
-        ["rconv8","regular"],
-        ["rconv9","regular"],
-        ["rconv10","regular"],
-        ["rconv11","regular"],
-        ["rconv12","regulargpool"],
-        ["rconv13","regular"],
-        ["rconv14","regular"],
-        ["rconv15","regular"],
-        ["rconv16","regular"],
-        ["rconv17","regulargpool"],
-        ["rconv18","regular"],
-        ["rconv19","regular"],
-        ["rconv20","regular"],
-    ],
-    "p1_num_channels":48,
-    "g1_num_channels":48,
-    "v1_num_channels":96,
-    "sbv2_num_channels":96,
-    "num_scorebeliefs":8,
-    "v2_size":112,
+    "trunk_num_channels":48,
+    "mid_num_channels":48,
+    "gpool_num_channels":32,
+    "transformer_ffn_channels":128,
+    "transformer_heads":3,
+    "transformer_kv_heads":3,
+    "block_kind": [item for i in range(1,6) for item in [[f"attn{i}","attnrope"],[f"ffn{i}","ffng"]]],
+    "p1_num_channels":16,
+    "g1_num_channels":16,
+    "v1_num_channels":16,
+    "sbv2_num_channels":32,
+    "num_scorebeliefs":4,
+    "v2_size":48,
 }
 
-
-# Transformer model configs
-# Naming convention:
-# "b14c192h6tfrs" as an example:
-# "b14" = 14 layers
-# "c192" = 192 hidden dims
-# "h6" = 6 heads (traditional MHA, Q,K,V have same number of heads)
-# "tfrs" = transformer with RoPE and SwiGLU
-
 b7c96h3tfrs = {
-    "version":15,
+    "version":17,
     "norm_kind":"fixup",
     "bnorm_epsilon": 1e-4,
     "bnorm_running_avg_momentum": 0.001,
@@ -1560,17 +1018,34 @@ b7c96h3tfrs = {
     "transformer_ffn_channels":256,
     "transformer_heads":3,
     "transformer_kv_heads":3,
-    "use_attention_pool":False,
-    "num_attention_pool_heads":4,
-    "block_kind": [
-        ["rconv1","transformerropesg"],
-        ["rconv2","transformerropesg"],
-        ["rconv3","transformerropesg"],
-        ["rconv4","transformerropesg"],
-        ["rconv5","transformerropesg"],
-        ["rconv6","transformerropesg"],
-        ["rconv7","transformerropesg"],
-    ],
+    "block_kind": [item for i in range(1,8) for item in [[f"attn{i}","attnrope"],[f"ffn{i}","ffnsg"]]],
+    "p1_num_channels":32,
+    "g1_num_channels":32,
+    "v1_num_channels":32,
+    "sbv2_num_channels":48,
+    "num_scorebeliefs":4,
+    "v2_size":64,
+}
+
+# Like b7c96h3tfrs but with grouped-query attention (6 query heads, 3 KV heads), explicit
+# query/key head dim 32 and value head dim 16, and learnable RoPE.
+b7c96h6kv3qk32v16tflrs = {
+    "version":17,
+    "norm_kind":"fixup",
+    "bnorm_epsilon": 1e-4,
+    "bnorm_running_avg_momentum": 0.001,
+    "initial_conv_1x1": False,
+    "gamma_weight_decay_center_1":True,
+    "trunk_num_channels":96,
+    "mid_num_channels":96,
+    "gpool_num_channels":32,
+    "transformer_ffn_channels":256,
+    "transformer_heads":6,
+    "transformer_kv_heads":3,
+    "attention_query_head_dim":32,
+    "attention_value_head_dim":16,
+    "learnable_rope":True,
+    "block_kind": [item for i in range(1,8) for item in [[f"attn{i}","attnrope"],[f"ffn{i}","ffnsg"]]],
     "p1_num_channels":32,
     "g1_num_channels":32,
     "v1_num_channels":32,
@@ -1580,7 +1055,7 @@ b7c96h3tfrs = {
 }
 
 b8c96h3tfrs = {
-    "version":15,
+    "version":17,
     "norm_kind":"fixup",
     "bnorm_epsilon": 1e-4,
     "bnorm_running_avg_momentum": 0.001,
@@ -1592,18 +1067,7 @@ b8c96h3tfrs = {
     "transformer_ffn_channels":256,
     "transformer_heads":3,
     "transformer_kv_heads":3,
-    "use_attention_pool":False,
-    "num_attention_pool_heads":4,
-    "block_kind": [
-        ["rconv1","transformerropesg"],
-        ["rconv2","transformerropesg"],
-        ["rconv3","transformerropesg"],
-        ["rconv4","transformerropesg"],
-        ["rconv5","transformerropesg"],
-        ["rconv6","transformerropesg"],
-        ["rconv7","transformerropesg"],
-        ["rconv8","transformerropesg"],
-    ],
+    "block_kind": [item for i in range(1,9) for item in [[f"attn{i}","attnrope"],[f"ffn{i}","ffnsg"]]],
     "p1_num_channels":32,
     "g1_num_channels":32,
     "v1_num_channels":32,
@@ -1613,7 +1077,7 @@ b8c96h3tfrs = {
 }
 
 b2b10c96h3tfrs = {
-    "version":15,
+    "version":17,
     "norm_kind":"fixup",
     "bnorm_epsilon": 1e-4,
     "bnorm_running_avg_momentum": 0.001,
@@ -1625,21 +1089,29 @@ b2b10c96h3tfrs = {
     "transformer_ffn_channels":256,
     "transformer_heads":3,
     "transformer_kv_heads":3,
-    "use_attention_pool":False,
-    "num_attention_pool_heads":4,
     "block_kind": [
         ["rconv1","regular"],
         ["rconv2","regular"],
-        ["rconv3","transformerropesg"],
-        ["rconv4","transformerropesg"],
-        ["rconv5","transformerropesg"],
-        ["rconv6","transformerropesg"],
-        ["rconv7","transformerropesg"],
-        ["rconv8","transformerropesg"],
-        ["rconv9","transformerropesg"],
-        ["rconv10","transformerropesg"],
-        ["rconv11","transformerropesg"],
-        ["rconv12","transformerropesg"],
+        ["attn3","attnrope"],
+        ["ffn3","ffnsg"],
+        ["attn4","attnrope"],
+        ["ffn4","ffnsg"],
+        ["attn5","attnrope"],
+        ["ffn5","ffnsg"],
+        ["attn6","attnrope"],
+        ["ffn6","ffnsg"],
+        ["attn7","attnrope"],
+        ["ffn7","ffnsg"],
+        ["attn8","attnrope"],
+        ["ffn8","ffnsg"],
+        ["attn9","attnrope"],
+        ["ffn9","ffnsg"],
+        ["attn10","attnrope"],
+        ["ffn10","ffnsg"],
+        ["attn11","attnrope"],
+        ["ffn11","ffnsg"],
+        ["attn12","attnrope"],
+        ["ffn12","ffnsg"],
     ],
     "p1_num_channels":32,
     "g1_num_channels":32,
@@ -1649,44 +1121,8 @@ b2b10c96h3tfrs = {
     "v2_size":64,
 }
 
-b11c96h3tfrs = {
-    "version":15,
-    "norm_kind":"fixup",
-    "bnorm_epsilon": 1e-4,
-    "bnorm_running_avg_momentum": 0.001,
-    "initial_conv_1x1": False,
-    "gamma_weight_decay_center_1":True,
-    "trunk_num_channels":96,
-    "mid_num_channels":96,
-    "gpool_num_channels":32,
-    "transformer_ffn_channels":256,
-    "transformer_heads":3,
-    "transformer_kv_heads":3,
-    "use_attention_pool":False,
-    "num_attention_pool_heads":4,
-    "block_kind": [
-        ["rconv1","transformerropesg"],
-        ["rconv2","transformerropesg"],
-        ["rconv3","transformerropesg"],
-        ["rconv4","transformerropesg"],
-        ["rconv5","transformerropesg"],
-        ["rconv6","transformerropesg"],
-        ["rconv7","transformerropesg"],
-        ["rconv8","transformerropesg"],
-        ["rconv9","transformerropesg"],
-        ["rconv10","transformerropesg"],
-        ["rconv11","transformerropesg"],
-    ],
-    "p1_num_channels":32,
-    "g1_num_channels":32,
-    "v1_num_channels":32,
-    "sbv2_num_channels":48,
-    "num_scorebeliefs":4,
-    "v2_size":64,
-}
-
-b9c96h3tgabsg = {
-    "version":15,
+b9c96h3tgabs = {
+    "version":17,
     "norm_kind":"fixup",
     "bnorm_epsilon": 1e-4,
     "bnorm_running_avg_momentum": 0.001,
@@ -1700,22 +1136,10 @@ b9c96h3tgabsg = {
     "transformer_kv_heads":3,
     "gab_d1":16,
     "gab_d2":16,
-    "gab_num_templates":16,
-    "gab_num_fourier_features":8,
-    "gab_mlp_hidden":64,
-    "use_attention_pool":False,
-    "num_attention_pool_heads":4,
-    "block_kind": [
-        ["rconv1","transformergabsg"],
-        ["rconv2","transformergabsg"],
-        ["rconv3","transformergabsg"],
-        ["rconv4","transformergabsg"],
-        ["rconv5","transformergabsg"],
-        ["rconv6","transformergabsg"],
-        ["rconv7","transformergabsg"],
-        ["rconv8","transformergabsg"],
-        ["rconv9","transformergabsg"],
-    ],
+    "gab_num_templates":32,
+    "gab_num_fourier_features":12,
+    "gab_mlp_hidden":96,
+    "block_kind": [item for i in range(1,10) for item in [[f"attn{i}","attngab"],[f"ffn{i}","ffnsg"]]],
     "p1_num_channels":32,
     "g1_num_channels":32,
     "v1_num_channels":32,
@@ -1724,49 +1148,8 @@ b9c96h3tgabsg = {
     "v2_size":64,
 }
 
-b11c96h3tgabsg = {
-    "version":15,
-    "norm_kind":"fixup",
-    "bnorm_epsilon": 1e-4,
-    "bnorm_running_avg_momentum": 0.001,
-    "initial_conv_1x1": False,
-    "gamma_weight_decay_center_1":True,
-    "trunk_num_channels":96,
-    "mid_num_channels":96,
-    "gpool_num_channels":32,
-    "transformer_ffn_channels":256,
-    "transformer_heads":3,
-    "transformer_kv_heads":3,
-    "gab_d1":16,
-    "gab_d2":16,
-    "gab_num_templates":16,
-    "gab_num_fourier_features":8,
-    "gab_mlp_hidden":64,
-    "use_attention_pool":False,
-    "num_attention_pool_heads":4,
-    "block_kind": [
-        ["rconv1","transformergabsg"],
-        ["rconv2","transformergabsg"],
-        ["rconv3","transformergabsg"],
-        ["rconv4","transformergabsg"],
-        ["rconv5","transformergabsg"],
-        ["rconv6","transformergabsg"],
-        ["rconv7","transformergabsg"],
-        ["rconv8","transformergabsg"],
-        ["rconv9","transformergabsg"],
-        ["rconv10","transformergabsg"],
-        ["rconv11","transformergabsg"],
-    ],
-    "p1_num_channels":32,
-    "g1_num_channels":32,
-    "v1_num_channels":32,
-    "sbv2_num_channels":48,
-    "num_scorebeliefs":4,
-    "v2_size":64,
-}
-
-b14c192h6tfrs = {
-    "version":15,
+b10c192h6tgabs = {
+    "version":17,
     "norm_kind":"fixup",
     "bnorm_epsilon": 1e-4,
     "bnorm_running_avg_momentum": 0.001,
@@ -1778,23 +1161,359 @@ b14c192h6tfrs = {
     "transformer_ffn_channels":512,
     "transformer_heads":6,
     "transformer_kv_heads":6,
-    "use_attention_pool":False,
-    "num_attention_pool_heads":4,
+    "gab_d1":32,
+    "gab_d2":32,
+    "gab_num_templates":48,
+    "gab_num_fourier_features":16,
+    "gab_mlp_hidden":128,
+    "block_kind": [item for i in range(1,11) for item in [[f"attn{i}","attngab"],[f"ffn{i}","ffnsg"]]],
+    "p1_num_channels":32,
+    "g1_num_channels":32,
+    "v1_num_channels":32,
+    "sbv2_num_channels":80,
+    "num_scorebeliefs":8,
+    "v2_size":96,
+}
+
+b5c192h3nbttfrs = {
+    "version":17,
+    "norm_kind":"fixup",
+    "bnorm_epsilon": 1e-4,
+    "bnorm_running_avg_momentum": 0.001,
+    "initial_conv_1x1": False,
+    "gamma_weight_decay_center_1":True,
+    "trunk_num_channels":192,
+    "mid_num_channels":96,
+    "gpool_num_channels":32,
+    "transformer_ffn_channels":256,
+    "transformer_heads":3,
+    "transformer_kv_heads":3,
+    "block_kind": [[f"block{i}","bottlenest2transformerropesg"] for i in range(1,6)],
+    "p1_num_channels":32,
+    "g1_num_channels":32,
+    "v1_num_channels":32,
+    "sbv2_num_channels":48,
+    "num_scorebeliefs":4,
+    "v2_size":64,
+}
+
+b4c256h4nbttflrs = {
+    "version":17,
+    "norm_kind":"fixup",
+    "bnorm_epsilon": 1e-4,
+    "bnorm_running_avg_momentum": 0.001,
+    "initial_conv_1x1": False,
+    "gamma_weight_decay_center_1":True,
+    "trunk_num_channels":256,
+    "mid_num_channels":128,
+    "gpool_num_channels":32,
+    "transformer_ffn_channels":384,
+    "transformer_heads":4,
+    "transformer_kv_heads":4,
+    "learnable_rope":True,
+    "block_kind": [[f"block{i}","bottlenest2transformerropesg"] for i in range(1,5)],
+    "p1_num_channels":32,
+    "g1_num_channels":32,
+    "v1_num_channels":32,
+    "sbv2_num_channels":64,
+    "num_scorebeliefs":6,
+    "v2_size":80,
+}
+
+b5c384h6nbttflrs = {
+    "version":17,
+    "norm_kind":"fixup",
+    "bnorm_epsilon": 1e-4,
+    "bnorm_running_avg_momentum": 0.001,
+    "initial_conv_1x1": False,
+    "gamma_weight_decay_center_1":True,
+    "trunk_num_channels":384,
+    "mid_num_channels":192,
+    "gpool_num_channels":32,
+    "transformer_ffn_channels":512,
+    "transformer_heads":6,
+    "transformer_kv_heads":6,
+    "learnable_rope":True,
+    "block_kind": [[f"block{i}","bottlenest2transformerropesg"] for i in range(1,6)],
+    "p1_num_channels":32,
+    "g1_num_channels":32,
+    "v1_num_channels":32,
+    "sbv2_num_channels":80,
+    "num_scorebeliefs":8,
+    "v2_size":96,
+}
+
+b6c384h6nbttflrs = {
+    "version":17,
+    "norm_kind":"fixup",
+    "bnorm_epsilon": 1e-4,
+    "bnorm_running_avg_momentum": 0.001,
+    "initial_conv_1x1": False,
+    "gamma_weight_decay_center_1":True,
+    "trunk_num_channels":384,
+    "mid_num_channels":192,
+    "gpool_num_channels":32,
+    "transformer_ffn_channels":512,
+    "transformer_heads":6,
+    "transformer_kv_heads":6,
+    "learnable_rope":True,
+    "block_kind": [[f"block{i}","bottlenest2transformerropesg"] for i in range(1,7)],
+    "p1_num_channels":32,
+    "g1_num_channels":32,
+    "v1_num_channels":32,
+    "sbv2_num_channels":80,
+    "num_scorebeliefs":8,
+    "v2_size":96,
+}
+
+b7c384h6nbttflrs = {
+    "version":17,
+    "norm_kind":"fixup",
+    "bnorm_epsilon": 1e-4,
+    "bnorm_running_avg_momentum": 0.001,
+    "initial_conv_1x1": False,
+    "gamma_weight_decay_center_1":True,
+    "trunk_num_channels":384,
+    "mid_num_channels":192,
+    "gpool_num_channels":32,
+    "transformer_ffn_channels":512,
+    "transformer_heads":6,
+    "transformer_kv_heads":6,
+    "learnable_rope":True,
+    "block_kind": [[f"block{i}","bottlenest2transformerropesg"] for i in range(1,8)],
+    "p1_num_channels":32,
+    "g1_num_channels":32,
+    "v1_num_channels":32,
+    "sbv2_num_channels":80,
+    "num_scorebeliefs":8,
+    "v2_size":96,
+}
+
+b9c768h12nbttflrs = {
+    "version":17,
+    "norm_kind":"fixup",
+    "bnorm_epsilon": 1e-4,
+    "bnorm_running_avg_momentum": 0.001,
+    "initial_conv_1x1": False,
+    "gamma_weight_decay_center_1":True,
+    "trunk_num_channels":768,
+    "mid_num_channels":384,
+    "gpool_num_channels":64,
+    "transformer_ffn_channels":1024,
+    "transformer_heads":12,
+    "transformer_kv_heads":12,
+    "learnable_rope":True,
+    "block_kind": [[f"block{i}","bottlenest2transformerropesg"] for i in range(1,10)],
+    "p1_num_channels":64,
+    "g1_num_channels":64,
+    "v1_num_channels":128,
+    "sbv2_num_channels":128,
+    "num_scorebeliefs":8,
+    "v2_size":128,
+}
+
+b15c512h8nbttflrs = {
+    "version":17,
+    "norm_kind":"fixup",
+    "bnorm_epsilon": 1e-4,
+    "bnorm_running_avg_momentum": 0.001,
+    "initial_conv_1x1": False,
+    "gamma_weight_decay_center_1":True,
+    "trunk_num_channels":512,
+    "mid_num_channels":256,
+    "gpool_num_channels":64,
+    "transformer_ffn_channels":768,
+    "transformer_heads":8,
+    "transformer_kv_heads":8,
+    "learnable_rope":True,
+    "block_kind": [[f"block{i}","bottlenest2transformerropesg"] for i in range(1,16)],
+    "p1_num_channels":64,
+    "g1_num_channels":64,
+    "v1_num_channels":128,
+    "sbv2_num_channels":128,
+    "num_scorebeliefs":8,
+    "v2_size":128,
+}
+
+b10c512h8nbt3tflrs = {
+    "version":17,
+    "norm_kind":"fixup",
+    "bnorm_epsilon": 1e-4,
+    "bnorm_running_avg_momentum": 0.001,
+    "initial_conv_1x1": False,
+    "gamma_weight_decay_center_1":True,
+    "trunk_num_channels":512,
+    "mid_num_channels":256,
+    "gpool_num_channels":64,
+    "transformer_ffn_channels":768,
+    "transformer_heads":8,
+    "transformer_kv_heads":8,
+    "learnable_rope":True,
+    "block_kind": [[f"block{i}","bottlenest3transformerropesg"] for i in range(1,11)],
+    "p1_num_channels":64,
+    "g1_num_channels":64,
+    "v1_num_channels":128,
+    "sbv2_num_channels":128,
+    "num_scorebeliefs":8,
+    "v2_size":128,
+}
+
+b14c768h12nbt3tflrs = {
+    "version":17,
+    "norm_kind":"fixup",
+    "bnorm_epsilon": 1e-4,
+    "bnorm_running_avg_momentum": 0.001,
+    "initial_conv_1x1": False,
+    "gamma_weight_decay_center_1":True,
+    "trunk_num_channels":768,
+    "mid_num_channels":384,
+    "gpool_num_channels":96,
+    "transformer_ffn_channels":1152,
+    "transformer_heads":12,
+    "transformer_kv_heads":12,
+    "learnable_rope":True,
+    "block_kind": [[f"block{i}","bottlenest3transformerropesg"] for i in range(1,15)],
+    "p1_num_channels":96,
+    "g1_num_channels":96,
+    "v1_num_channels":192,
+    "sbv2_num_channels":192,
+    "num_scorebeliefs":8,
+    "v2_size":192,
+}
+
+b11c768h12nbt3tflrs = {
+    "version":17,
+    "norm_kind":"fixup",
+    "bnorm_epsilon": 1e-4,
+    "bnorm_running_avg_momentum": 0.001,
+    "initial_conv_1x1": False,
+    "gamma_weight_decay_center_1":True,
+    "trunk_num_channels":768,
+    "mid_num_channels":384,
+    "gpool_num_channels":96,
+    "transformer_ffn_channels":1152,
+    "transformer_heads":12,
+    "transformer_kv_heads":12,
+    "learnable_rope":True,
+    "block_kind": [[f"block{i}","bottlenest3transformerropesg"] for i in range(1,12)],
+    "p1_num_channels":96,
+    "g1_num_channels":96,
+    "v1_num_channels":192,
+    "sbv2_num_channels":192,
+    "num_scorebeliefs":8,
+    "v2_size":192,
+}
+
+b13c1024h16nbttflrs = {
+    "version":17,
+    "norm_kind":"fixup",
+    "bnorm_epsilon": 1e-4,
+    "bnorm_running_avg_momentum": 0.001,
+    "initial_conv_1x1": False,
+    "gamma_weight_decay_center_1":True,
+    "trunk_num_channels":1024,
+    "mid_num_channels":512,
+    "gpool_num_channels":96,
+    "transformer_ffn_channels":1536,
+    "transformer_heads":16,
+    "transformer_kv_heads":16,
+    "learnable_rope":True,
+    "block_kind": [[f"block{i}","bottlenest2transformerropesg"] for i in range(1,14)],
+    "p1_num_channels":96,
+    "g1_num_channels":96,
+    "v1_num_channels":192,
+    "sbv2_num_channels":192,
+    "num_scorebeliefs":8,
+    "v2_size":192,
+}
+
+b15c1024h16nbt3tflrs = {
+    "version":17,
+    "norm_kind":"fixup",
+    "bnorm_epsilon": 1e-4,
+    "bnorm_running_avg_momentum": 0.001,
+    "initial_conv_1x1": False,
+    "gamma_weight_decay_center_1":True,
+    "trunk_num_channels":1024,
+    "mid_num_channels":512,
+    "gpool_num_channels":96,
+    "transformer_ffn_channels":1536,
+    "transformer_heads":16,
+    "transformer_kv_heads":16,
+    "learnable_rope":True,
+    "block_kind": [[f"block{i}","bottlenest3transformerropesg"] for i in range(1,16)],
+    "p1_num_channels":96,
+    "g1_num_channels":96,
+    "v1_num_channels":192,
+    "sbv2_num_channels":192,
+    "num_scorebeliefs":8,
+    "v2_size":192,
+}
+
+b14c192h6tfrs = {
+    "version":17,
+    "norm_kind":"fixup",
+    "bnorm_epsilon": 1e-4,
+    "bnorm_running_avg_momentum": 0.001,
+    "initial_conv_1x1": False,
+    "gamma_weight_decay_center_1":True,
+    "trunk_num_channels":192,
+    "mid_num_channels":192,
+    "gpool_num_channels":32,
+    "transformer_ffn_channels":512,
+    "transformer_heads":6,
+    "transformer_kv_heads":6,
+    "block_kind": [item for i in range(1,15) for item in [[f"attn{i}","attnrope"],[f"ffn{i}","ffnsg"]]],
+    "p1_num_channels":32,
+    "g1_num_channels":32,
+    "v1_num_channels":32,
+    "sbv2_num_channels":80,
+    "num_scorebeliefs":8,
+    "v2_size":96,
+}
+
+b2b13c192h6tfrs = {
+    "version":17,
+    "norm_kind":"fixup",
+    "bnorm_epsilon": 1e-4,
+    "bnorm_running_avg_momentum": 0.001,
+    "initial_conv_1x1": False,
+    "gamma_weight_decay_center_1":True,
+    "trunk_num_channels":192,
+    "mid_num_channels":192,
+    "gpool_num_channels":32,
+    "transformer_ffn_channels":512,
+    "transformer_heads":6,
+    "transformer_kv_heads":6,
     "block_kind": [
-        ["rconv1","transformerropesg"],
-        ["rconv2","transformerropesg"],
-        ["rconv3","transformerropesg"],
-        ["rconv4","transformerropesg"],
-        ["rconv5","transformerropesg"],
-        ["rconv6","transformerropesg"],
-        ["rconv7","transformerropesg"],
-        ["rconv8","transformerropesg"],
-        ["rconv9","transformerropesg"],
-        ["rconv10","transformerropesg"],
-        ["rconv11","transformerropesg"],
-        ["rconv12","transformerropesg"],
-        ["rconv13","transformerropesg"],
-        ["rconv14","transformerropesg"],
+        ["rconv1","regular"],
+        ["rconv2","regular"],
+        ["attn3","attnrope"],
+        ["ffn3","ffnsg"],
+        ["attn4","attnrope"],
+        ["ffn4","ffnsg"],
+        ["attn5","attnrope"],
+        ["ffn5","ffnsg"],
+        ["attn6","attnrope"],
+        ["ffn6","ffnsg"],
+        ["attn7","attnrope"],
+        ["ffn7","ffnsg"],
+        ["attn8","attnrope"],
+        ["ffn8","ffnsg"],
+        ["attn9","attnrope"],
+        ["ffn9","ffnsg"],
+        ["attn10","attnrope"],
+        ["ffn10","ffnsg"],
+        ["attn11","attnrope"],
+        ["ffn11","ffnsg"],
+        ["attn12","attnrope"],
+        ["ffn12","ffnsg"],
+        ["attn13","attnrope"],
+        ["ffn13","ffnsg"],
+        ["attn14","attnrope"],
+        ["ffn14","ffnsg"],
+        ["attn15","attnrope"],
+        ["ffn15","ffnsg"],
     ],
     "p1_num_channels":32,
     "g1_num_channels":32,
@@ -1804,45 +1523,8 @@ b14c192h6tfrs = {
     "v2_size":96,
 }
 
-b12c384h12tfrs = {
-    "version":15,
-    "norm_kind":"fixup",
-    "bnorm_epsilon": 1e-4,
-    "bnorm_running_avg_momentum": 0.001,
-    "initial_conv_1x1": False,
-    "gamma_weight_decay_center_1":True,
-    "trunk_num_channels":384,
-    "mid_num_channels":384,
-    "gpool_num_channels":64,
-    "transformer_ffn_channels":1024,
-    "transformer_heads":12,
-    "transformer_kv_heads":12,
-    "use_attention_pool":False,
-    "num_attention_pool_heads":4,
-    "block_kind": [
-        ["rconv1","transformerropesg"],
-        ["rconv2","transformerropesg"],
-        ["rconv3","transformerropesg"],
-        ["rconv4","transformerropesg"],
-        ["rconv5","transformerropesg"],
-        ["rconv6","transformerropesg"],
-        ["rconv7","transformerropesg"],
-        ["rconv8","transformerropesg"],
-        ["rconv9","transformerropesg"],
-        ["rconv10","transformerropesg"],
-        ["rconv11","transformerropesg"],
-        ["rconv12","transformerropesg"],
-    ],
-    "p1_num_channels":48,
-    "g1_num_channels":48,
-    "v1_num_channels":96,
-    "sbv2_num_channels":112,
-    "num_scorebeliefs":8,
-    "v2_size":128,
-}
-
-b24c256h8tfrs = {
-    "version":15,
+b16c256h8tfrs = {
+    "version":17,
     "norm_kind":"fixup",
     "bnorm_epsilon": 1e-4,
     "bnorm_running_avg_momentum": 0.001,
@@ -1850,48 +1532,21 @@ b24c256h8tfrs = {
     "gamma_weight_decay_center_1":True,
     "trunk_num_channels":256,
     "mid_num_channels":256,
-    "gpool_num_channels":64,
+    "gpool_num_channels":48,
     "transformer_ffn_channels":768,
     "transformer_heads":8,
     "transformer_kv_heads":8,
-    "use_attention_pool":False,
-    "num_attention_pool_heads":4,
-    "block_kind": [
-        ["rconv1","transformerropesg"],
-        ["rconv2","transformerropesg"],
-        ["rconv3","transformerropesg"],
-        ["rconv4","transformerropesg"],
-        ["rconv5","transformerropesg"],
-        ["rconv6","transformerropesg"],
-        ["rconv7","transformerropesg"],
-        ["rconv8","transformerropesg"],
-        ["rconv9","transformerropesg"],
-        ["rconv10","transformerropesg"],
-        ["rconv11","transformerropesg"],
-        ["rconv12","transformerropesg"],
-        ["rconv13","transformerropesg"],
-        ["rconv14","transformerropesg"],
-        ["rconv15","transformerropesg"],
-        ["rconv16","transformerropesg"],
-        ["rconv17","transformerropesg"],
-        ["rconv18","transformerropesg"],
-        ["rconv19","transformerropesg"],
-        ["rconv20","transformerropesg"],
-        ["rconv21","transformerropesg"],
-        ["rconv22","transformerropesg"],
-        ["rconv23","transformerropesg"],
-        ["rconv24","transformerropesg"],
-    ],
+    "block_kind": [item for i in range(1,17) for item in [[f"attn{i}","attnrope"],[f"ffn{i}","ffnsg"]]],
     "p1_num_channels":48,
     "g1_num_channels":48,
     "v1_num_channels":96,
-    "sbv2_num_channels":112,
+    "sbv2_num_channels":96,
     "num_scorebeliefs":8,
-    "v2_size":128,
+    "v2_size":96,
 }
 
-b18c384h12tfrs = {
-    "version":15,
+b21c384h12tfrs = {
+    "version":17,
     "norm_kind":"fixup",
     "bnorm_epsilon": 1e-4,
     "bnorm_running_avg_momentum": 0.001,
@@ -1903,103 +1558,40 @@ b18c384h12tfrs = {
     "transformer_ffn_channels":1024,
     "transformer_heads":12,
     "transformer_kv_heads":12,
-    "use_attention_pool":False,
-    "num_attention_pool_heads":4,
-    "block_kind": [
-        ["rconv1","transformerropesg"],
-        ["rconv2","transformerropesg"],
-        ["rconv3","transformerropesg"],
-        ["rconv4","transformerropesg"],
-        ["rconv5","transformerropesg"],
-        ["rconv6","transformerropesg"],
-        ["rconv7","transformerropesg"],
-        ["rconv8","transformerropesg"],
-        ["rconv9","transformerropesg"],
-        ["rconv10","transformerropesg"],
-        ["rconv11","transformerropesg"],
-        ["rconv12","transformerropesg"],
-        ["rconv13","transformerropesg"],
-        ["rconv14","transformerropesg"],
-        ["rconv15","transformerropesg"],
-        ["rconv16","transformerropesg"],
-        ["rconv17","transformerropesg"],
-        ["rconv18","transformerropesg"],
-    ],
-    "p1_num_channels":48,
-    "g1_num_channels":48,
-    "v1_num_channels":96,
-    "sbv2_num_channels":128,
-    "num_scorebeliefs":8,
-    "v2_size":128,
-}
-
-b40c384h12tfrs = {
-    "version":15,
-    "norm_kind":"fixup",
-    "bnorm_epsilon": 1e-4,
-    "bnorm_running_avg_momentum": 0.001,
-    "initial_conv_1x1": False,
-    "gamma_weight_decay_center_1":True,
-    "trunk_num_channels":384,
-    "mid_num_channels":384,
-    "gpool_num_channels":64,
-    "transformer_ffn_channels":1024,
-    "transformer_heads":12,
-    "transformer_kv_heads":12,
-    "use_attention_pool":False,
-    "num_attention_pool_heads":4,
-    "block_kind": [
-        ["rconv1","transformerropesg"],
-        ["rconv2","transformerropesg"],
-        ["rconv3","transformerropesg"],
-        ["rconv4","transformerropesg"],
-        ["rconv5","transformerropesg"],
-        ["rconv6","transformerropesg"],
-        ["rconv7","transformerropesg"],
-        ["rconv8","transformerropesg"],
-        ["rconv9","transformerropesg"],
-        ["rconv10","transformerropesg"],
-        ["rconv11","transformerropesg"],
-        ["rconv12","transformerropesg"],
-        ["rconv13","transformerropesg"],
-        ["rconv14","transformerropesg"],
-        ["rconv15","transformerropesg"],
-        ["rconv16","transformerropesg"],
-        ["rconv17","transformerropesg"],
-        ["rconv18","transformerropesg"],
-        ["rconv19","transformerropesg"],
-        ["rconv20","transformerropesg"],
-        ["rconv21","transformerropesg"],
-        ["rconv22","transformerropesg"],
-        ["rconv23","transformerropesg"],
-        ["rconv24","transformerropesg"],
-        ["rconv25","transformerropesg"],
-        ["rconv26","transformerropesg"],
-        ["rconv27","transformerropesg"],
-        ["rconv28","transformerropesg"],
-        ["rconv29","transformerropesg"],
-        ["rconv30","transformerropesg"],
-        ["rconv31","transformerropesg"],
-        ["rconv32","transformerropesg"],
-        ["rconv33","transformerropesg"],
-        ["rconv34","transformerropesg"],
-        ["rconv35","transformerropesg"],
-        ["rconv36","transformerropesg"],
-        ["rconv37","transformerropesg"],
-        ["rconv38","transformerropesg"],
-        ["rconv39","transformerropesg"],
-        ["rconv40","transformerropesg"],
-    ],
+    "block_kind": [item for i in range(1,22) for item in [[f"attn{i}","attnrope"],[f"ffn{i}","ffnsg"]]],
     "p1_num_channels":64,
     "g1_num_channels":64,
     "v1_num_channels":128,
     "sbv2_num_channels":128,
     "num_scorebeliefs":8,
-    "v2_size":144,
+    "v2_size":128,
 }
 
-b21c512h16tfrs = {
-    "version":15,
+b21c384h12tflrs = {
+    "version":17,
+    "norm_kind":"fixup",
+    "bnorm_epsilon": 1e-4,
+    "bnorm_running_avg_momentum": 0.001,
+    "initial_conv_1x1": False,
+    "gamma_weight_decay_center_1":True,
+    "trunk_num_channels":384,
+    "mid_num_channels":384,
+    "gpool_num_channels":64,
+    "transformer_ffn_channels":1024,
+    "transformer_heads":12,
+    "transformer_kv_heads":12,
+    "learnable_rope":True,
+    "block_kind": [item for i in range(1,22) for item in [[f"attn{i}","attnrope"],[f"ffn{i}","ffnsg"]]],
+    "p1_num_channels":64,
+    "g1_num_channels":64,
+    "v1_num_channels":128,
+    "sbv2_num_channels":128,
+    "num_scorebeliefs":8,
+    "v2_size":128,
+}
+
+b30c512h16tflrs = {
+    "version":17,
     "norm_kind":"fixup",
     "bnorm_epsilon": 1e-4,
     "bnorm_running_avg_momentum": 0.001,
@@ -2007,108 +1599,395 @@ b21c512h16tfrs = {
     "gamma_weight_decay_center_1":True,
     "trunk_num_channels":512,
     "mid_num_channels":512,
-    "gpool_num_channels":64,
+    "gpool_num_channels":96,
     "transformer_ffn_channels":1536,
     "transformer_heads":16,
     "transformer_kv_heads":16,
-    "use_attention_pool":False,
-    "num_attention_pool_heads":4,
-    "block_kind": [
-        ["rconv1","transformerropesg"],
-        ["rconv2","transformerropesg"],
-        ["rconv3","transformerropesg"],
-        ["rconv4","transformerropesg"],
-        ["rconv5","transformerropesg"],
-        ["rconv6","transformerropesg"],
-        ["rconv7","transformerropesg"],
-        ["rconv8","transformerropesg"],
-        ["rconv9","transformerropesg"],
-        ["rconv10","transformerropesg"],
-        ["rconv11","transformerropesg"],
-        ["rconv12","transformerropesg"],
-        ["rconv13","transformerropesg"],
-        ["rconv14","transformerropesg"],
-        ["rconv15","transformerropesg"],
-        ["rconv16","transformerropesg"],
-        ["rconv17","transformerropesg"],
-        ["rconv18","transformerropesg"],
-        ["rconv19","transformerropesg"],
-        ["rconv20","transformerropesg"],
-        ["rconv21","transformerropesg"],
-    ],
-    "p1_num_channels":64,
-    "g1_num_channels":64,
-    "v1_num_channels":128,
-    "sbv2_num_channels":128,
+    "learnable_rope":True,
+    "block_kind": [item for i in range(1,31) for item in [[f"attn{i}","attnrope"],[f"ffn{i}","ffnsg"]]],
+    "p1_num_channels":96,
+    "g1_num_channels":96,
+    "v1_num_channels":192,
+    "sbv2_num_channels":192,
     "num_scorebeliefs":8,
-    "v2_size":144,
+    "v2_size":192,
 }
 
+b22c192h6tfrs = {
+    "version":17,
+    "norm_kind":"fixup",
+    "bnorm_epsilon": 1e-4,
+    "bnorm_running_avg_momentum": 0.001,
+    "initial_conv_1x1": False,
+    "gamma_weight_decay_center_1":True,
+    "trunk_num_channels":192,
+    "mid_num_channels":192,
+    "gpool_num_channels":48,
+    "transformer_ffn_channels":512,
+    "transformer_heads":6,
+    "transformer_kv_heads":6,
+    "block_kind": [item for i in range(1,23) for item in [[f"attn{i}","attnrope"],[f"ffn{i}","ffnsg"]]],
+    "p1_num_channels":48,
+    "g1_num_channels":48,
+    "v1_num_channels":96,
+    "sbv2_num_channels":96,
+    "num_scorebeliefs":8,
+    "v2_size":96,
+}
+b10c384h6nbttflrs = {
+    "version":17,
+    "norm_kind":"fixup",
+    "bnorm_epsilon": 1e-4,
+    "bnorm_running_avg_momentum": 0.001,
+    "initial_conv_1x1": False,
+    "gamma_weight_decay_center_1":True,
+    "trunk_num_channels":384,
+    "mid_num_channels":192,
+    "gpool_num_channels":48,
+    "transformer_ffn_channels":512,
+    "transformer_heads":6,
+    "transformer_kv_heads":6,
+    "learnable_rope":True,
+    "block_kind": [[f"block{i}","bottlenest2transformerropesg"] for i in range(1,11)],
+    "p1_num_channels":48,
+    "g1_num_channels":48,
+    "v1_num_channels":96,
+    "sbv2_num_channels":96,
+    "num_scorebeliefs":8,
+    "v2_size":96,
+}
+
+b45c384h12tflrs = {
+    "version":17,
+    "norm_kind":"fixup",
+    "bnorm_epsilon": 1e-4,
+    "bnorm_running_avg_momentum": 0.001,
+    "initial_conv_1x1": False,
+    "gamma_weight_decay_center_1":True,
+    "trunk_num_channels":384,
+    "mid_num_channels":384,
+    "gpool_num_channels":96,
+    "transformer_ffn_channels":1024,
+    "transformer_heads":12,
+    "transformer_kv_heads":12,
+    "learnable_rope":True,
+    "block_kind": [item for i in range(1,46) for item in [[f"attn{i}","attnrope"],[f"ffn{i}","ffnsg"]]],
+    "p1_num_channels":96,
+    "g1_num_channels":96,
+    "v1_num_channels":192,
+    "sbv2_num_channels":192,
+    "num_scorebeliefs":8,
+    "v2_size":192,
+}
+
+b5c384h6nbttfgabs = {
+    "version":17,
+    "norm_kind":"fixup",
+    "bnorm_epsilon": 1e-4,
+    "bnorm_running_avg_momentum": 0.001,
+    "initial_conv_1x1": False,
+    "gamma_weight_decay_center_1":True,
+    "trunk_num_channels":384,
+    "mid_num_channels":192,
+    "gpool_num_channels":32,
+    "transformer_ffn_channels":512,
+    "transformer_heads":6,
+    "transformer_kv_heads":6,
+    "gab_d1":32,
+    "gab_d2":32,
+    "gab_num_templates":48,
+    "gab_num_fourier_features":16,
+    "gab_mlp_hidden":128,
+    "block_kind": [[f"block{i}","bottlenest2transformergabsg"] for i in range(1,6)],
+    "p1_num_channels":32,
+    "g1_num_channels":32,
+    "v1_num_channels":32,
+    "sbv2_num_channels":80,
+    "num_scorebeliefs":8,
+    "v2_size":96,
+}
+
+b5c384h6nbttftabs = {
+    "version":17,
+    "norm_kind":"fixup",
+    "bnorm_epsilon": 1e-4,
+    "bnorm_running_avg_momentum": 0.001,
+    "initial_conv_1x1": False,
+    "gamma_weight_decay_center_1":True,
+    "trunk_num_channels":384,
+    "mid_num_channels":192,
+    "gpool_num_channels":32,
+    "transformer_ffn_channels":512,
+    "transformer_heads":6,
+    "transformer_kv_heads":6,
+    "gab_d1":32,
+    "gab_d2":32,
+    "tab_c_z":32,
+    "tab_num_templates":32,
+    "tab_num_freqs":8,
+    "tab_num_blocks":3,
+    "tab_dilation":3,
+    "block_kind": [[f"block{i}","bottlenest2transformertabsg"] for i in range(1,6)],
+    "p1_num_channels":32,
+    "g1_num_channels":32,
+    "v1_num_channels":32,
+    "sbv2_num_channels":80,
+    "num_scorebeliefs":8,
+    "v2_size":96,
+}
+
+b5c384h6nbttfrtabs = {
+    "version":17,
+    "norm_kind":"fixup",
+    "bnorm_epsilon": 1e-4,
+    "bnorm_running_avg_momentum": 0.001,
+    "initial_conv_1x1": False,
+    "gamma_weight_decay_center_1":True,
+    "trunk_num_channels":384,
+    "mid_num_channels":192,
+    "gpool_num_channels":32,
+    "transformer_ffn_channels":512,
+    "transformer_heads":6,
+    "transformer_kv_heads":6,
+    "gab_d1":32,
+    "gab_d2":32,
+    "tab_c_z":32,
+    "tab_num_templates":32,
+    "tab_num_freqs":8,
+    "tab_num_blocks":3,
+    "tab_dilation":3,
+    "block_kind": [[f"block{i}","bottlenest2transformerropetabsg"] for i in range(1,6)],
+    "p1_num_channels":32,
+    "g1_num_channels":32,
+    "v1_num_channels":32,
+    "sbv2_num_channels":80,
+    "num_scorebeliefs":8,
+    "v2_size":96,
+}
+
+b5c384h6nbttflrtabcheaps = {
+    "version":17,
+    "norm_kind":"fixup",
+    "bnorm_epsilon": 1e-4,
+    "bnorm_running_avg_momentum": 0.001,
+    "initial_conv_1x1": False,
+    "gamma_weight_decay_center_1":True,
+    "trunk_num_channels":384,
+    "mid_num_channels":192,
+    "gpool_num_channels":32,
+    "transformer_ffn_channels":512,
+    "transformer_heads":6,
+    "transformer_kv_heads":6,
+    "learnable_rope":True,
+    "gab_d1":32,
+    "gab_d2":32,
+    "tab_c_z":16,
+    "tab_num_templates":16,
+    "tab_num_freqs":8,
+    "tab_num_blocks":3,
+    "tab_dilation":3,
+    "block_kind": [[f"block{i}","bottlenest2transformerropetabsg"] for i in range(1,6)],
+    "p1_num_channels":32,
+    "g1_num_channels":32,
+    "v1_num_channels":32,
+    "sbv2_num_channels":80,
+    "num_scorebeliefs":8,
+    "v2_size":96,
+}
+
+
+b5c384h6nbttflrtab2cheaps = {
+    "version":17,
+    "norm_kind":"fixup",
+    "bnorm_epsilon": 1e-4,
+    "bnorm_running_avg_momentum": 0.001,
+    "initial_conv_1x1": False,
+    "gamma_weight_decay_center_1":True,
+    "trunk_num_channels":384,
+    "mid_num_channels":192,
+    "gpool_num_channels":32,
+    "transformer_ffn_channels":512,
+    "transformer_heads":6,
+    "transformer_kv_heads":6,
+    "learnable_rope":True,
+    "gab_d1":32,
+    "gab_d2":32,
+    "tab_c_z":16,
+    "tab_num_templates":16,
+    "tab_num_blocks":3,
+    "tab_dilation":3,
+    "tab_use_frequency_mixing":True,
+    "block_kind": [[f"block{i}","bottlenest2transformerropetabsg"] for i in range(1,6)],
+    "p1_num_channels":32,
+    "g1_num_channels":32,
+    "v1_num_channels":32,
+    "sbv2_num_channels":80,
+    "num_scorebeliefs":8,
+    "v2_size":96,
+}
+
+
 base_config_of_name = {
-    # Micro-sized model configs
+    # CONVNETS ====================================================================
+    # "nbt" (nested bottleneck) architectures are usually much better than the plain residual block nets
+
+    # Micro-sized convnets
     "b1c6nbt": b1c6nbt,
     "b2c16": b2c16,
     "b4c32": b4c32,
-    "b6c96": b6c96,
+    "b6c96": b6c96,          # Historic katago architecture
 
-    # Small model configs, not too different in inference cost from b10c128
-    "b10c128": b10c128,
-    "b5c192nbt": b5c192nbt,
+    # Tiny convnets
+    "b10c128": b10c128,      # Historic katago architecture
+    "b5c192nbt": b5c192nbt,  # Probably better (nbt architecture is better)
 
     "b8c192nbt": b8c192nbt,
 
-    # Medium model configs, not too different in inference cost from b15c192
-    "b15c192": b15c192,
-    "b10c256nbt": b10c256nbt,
+    # Small convnets
+    "b15c192": b15c192,       # Historic katago architecture
+    "b10c256nbt": b10c256nbt, # Probably better (nbt architecture is better)
 
-    # Roughly AlphaZero-sized, not too different in inference cost from b20c256
-    "b20c256": b20c256,
-    "b30c256bt": b30c256bt,
-    "b24c320bt": b24c320bt,
+    # Roughly AlphaZero-sized convnets
+    "b20c256": b20c256,         # Classic alphazero, historic katago architecture
     "b20c384bt": b20c384bt,
-    "b23c256lbt": b23c256lbt,
-    "b18c320lbt": b18c320lbt,
     "b15c384lbt": b15c384lbt,
-    "b10c512lbt": b10c512lbt,
-    "b12c384llbt": b12c384llbt,
-    "b10c384nbt": b10c384nbt,  # Recommended best config for this cost
+    "b10c384nbt": b10c384nbt,   # Recommended best config for this cost
     "b10c480nb3t": b10c480nb3t,
-    "b7c384lnbt": b7c384lnbt,
-    "b5c512nnbt": b5c512nnbt,
-    "b20c384lbt": b20c384lbt,
 
-    # Roughly AlphaGoZero-sized, not too different in inference cost from b40c256
-    "b30c320": b30c320,
-    "b40c256": b40c256,
-    "b18c384nbt": b18c384nbt,  # Recommended best config for this cost
-    "b14c448nbt": b14c448nbt,
+    # Roughly AlphaGoZero-sized convnets
+    "b30c320": b30c320,           # Historic katago architecture
+    "b40c256": b40c256,           # Classic alphagozero, historic katago architecture
+    "b18c384nbt": b18c384nbt,     # Recommended best config for this cost
     "b18c384dnbt1": b18c384dnbt1,
-    "b18c384dnbt2": b18c384dnbt2,
 
-    # Large model configs, not too different in inference cost from b60c320
+    # Medium-large convnets
     "b40c384": b40c384,
-    "b60c320": b60c320,
-    "b41c384nbt": b41c384nbt,
+    "b60c320": b60c320,        # Historic katago architecture
     "b32c448nbt": b32c448nbt,
     "b28c512nbt": b28c512nbt,  # Recommended best config for this cost
     "b20c640nbt": b20c640nbt,
 
-    # Transformer models
-    "b2b10c96h3tfrs": b2b10c96h3tfrs,
-    "b9c96h3tgabsg": b9c96h3tgabsg,
-    "b11c96h3tgabsg": b11c96h3tgabsg,
-    "b7c96h3tfrs": b7c96h3tfrs,
-    "b8c96h3tfrs": b8c96h3tfrs,
-    "b11c96h3tfrs": b11c96h3tfrs,
-    "b14c192h6tfrs": b14c192h6tfrs,
-    "b12c384h12tfrs": b12c384h12tfrs,
-    "b24c256h8tfrs": b24c256h8tfrs,
-    "b18c384h12tfrs": b18c384h12tfrs,
-    "b40c384h12tfrs": b40c384h12tfrs,
-    "b21c512h16tfrs": b21c512h16tfrs,
+    # Large convnets
+    "b40c768nbt": b40c768nbt,  # Historic katago/zhizi architecture
 
-    "sandbox": sandbox,
+    # TRANSFORMERS ====================================================================
+    # "nbt" (nested bottleneck) transformers are usually much better than plain transformers
+    # Learnable RoPE transformers are usually much better than plain RoPE.
+    # Swiglu is good.
+
+    # Naming convention:
+    # "b14c192h6tfrs" as an example:
+    # "b14" = 14 layers
+    # "c192" = 192 hidden dims
+    # "h6" = 6 heads (traditional MHA, Q,K,V have same number of heads)
+    # "tf" = transformer, "r" or "lr" = rope or learnable rope, "s" = swiglu
+
+    # Tiny transformer models
+    "b5c48h3tfr": b5c48h3tfr,  # no swiglu
+    "b7c96h3tfrs": b7c96h3tfrs,
+    "b7c96h6kv3qk32v16tflrs": b7c96h6kv3qk32v16tflrs, # testing wacky gqa and channel differences
+    "b8c96h3tfrs": b8c96h3tfrs,
+    "b5c192h3nbttfrs": b5c192h3nbttfrs,
+    "b4c256h4nbttflrs": b4c256h4nbttflrs,
+
+    # Small transformer models
+    "b14c192h6tfrs": b14c192h6tfrs,
+    "b14c192h6tflrs": {**b14c192h6tfrs, "learnable_rope": True},
+    "b5c384h6nbttflrs": b5c384h6nbttflrs,
+    "b6c384h6nbttflrs": b6c384h6nbttflrs,
+    "b7c384h6nbttflrs": b7c384h6nbttflrs,
+    "b6c384h6nbttflrs-qkn-ireg16": {
+        **b6c384h6nbttflrs,
+        "attention_qk_norm": True,
+        "inline_registers": True,
+        "attention_num_rw_registers": 16
+    },
+
+    # b18c384nbt-comparable transformers (Comparable to AlphaGoZero's convnet in inference cost)
+    "b16c256h8tfrs": b16c256h8tfrs,
+    "b22c192h6tfrs": b22c192h6tfrs,
+    "b10c384h6nbttflrs": b10c384h6nbttflrs,
+
+    # b28c512nbt-comparable transformers
+    "b21c384h12tfrs": b21c384h12tfrs,
+    "b21c384h12tflrs": b21c384h12tflrs,
+    "b9c768h12nbttflrs": b9c768h12nbttflrs,
+    "b9c768h12nbttflrs-ireg16": {**b9c768h12nbttflrs, "inline_registers": True, "attention_num_rw_registers": 16},
+    "b15c512h8nbttflrs": b15c512h8nbttflrs,
+    "b10c512h8nbt3tflrs": b10c512h8nbt3tflrs,
+    "b14c512h8nbttflrs": {**b15c512h8nbttflrs, "block_kind": [[f"block{i}","bottlenest2transformerropesg"] for i in range(1,15)]},
+    "b14c512h8nbttflrs-ireg16": {
+        **b15c512h8nbttflrs,
+        "inline_registers": True,
+        "attention_num_rw_registers": 16,
+        "block_kind": [[f"block{i}","bottlenest2transformerropesg"] for i in range(1,15)]
+    },
+    "b14c512h8nbttflrs-qkn-ireg16": {
+        **b15c512h8nbttflrs,
+        "attention_qk_norm": True,
+        "inline_registers": True,
+        "attention_num_rw_registers": 16,
+        "block_kind": [[f"block{i}","bottlenest2transformerropesg"] for i in range(1,15)]
+    },
+    "b8c768h12nbttflrs-qkn-ireg16": {
+        **b9c768h12nbttflrs,
+        "attention_qk_norm": True,
+        "inline_registers": True,
+        "attention_num_rw_registers": 16,
+        "block_kind": [[f"block{i}","bottlenest2transformerropesg"] for i in range(1,9)]
+    },
+
+    # More expensive than b28c512nbt but cheaper than b40c768nbt
+    "b30c512h16tflrs": b30c512h16tflrs,
+    "b45c384h12tflrs": b45c384h12tflrs,
+    "b11c768h12nbt3tflrs": b11c768h12nbt3tflrs,
+    "b14c768h12nbt3tflrs": b14c768h12nbt3tflrs,
+    "b13c1024h16nbttflrs": b13c1024h16nbttflrs,
+
+    # Large transformers, about as heavy or heavier than b40c768nbt
+    "b15c1024h16nbt3tflrs": b15c1024h16nbt3tflrs,
+
+    # EXPERIMENTAL STUFF =============================================================
+
+    # Mixed conv and transformer
+    "b2b10c96h3tfrs": b2b10c96h3tfrs,
+    "b2b13c192h6tfrs": b2b13c192h6tfrs,
+
+    # GAB
+    "b9c96h3tgabs": b9c96h3tgabs,
+    "b10c192h6tgabs": b10c192h6tgabs,
+
+    # Nested bottleneck transformers with GAB/TAB
+    "b5c384h6nbttfgabs": b5c384h6nbttfgabs, # +GAB
+    "b5c384h6nbttftabs": b5c384h6nbttftabs, # TAB alone
+    "b5c384h6nbttfrtabs": b5c384h6nbttfrtabs, # RoPE+TAB
+    "b5c384h6nbttflrtabcheaps": b5c384h6nbttflrtabcheaps, # Learnable RoPE+TAB cheap
+    "b5c384h6nbttflrtab2cheaps": b5c384h6nbttflrtab2cheaps, # Learnable RoPE+TAB cheap, frequency mixing
+
+    "b2b5c384h6nbttflrs": {**b6c384h6nbttflrs, "block_kind": [
+        ["block1","bottlenest2"],
+        ["block2","bottlenest2"],
+        ["block3","bottlenest2transformerropesg"],
+        ["block4","bottlenest2transformerropesg"],
+        ["block5","bottlenest2transformerropesg"],
+        ["block6","bottlenest2transformerropesg"],
+        ["block7","bottlenest2transformerropesg"],
+    ]},
+    "b4b4c384h6nbttflrs": {**b6c384h6nbttflrs, "block_kind": [
+        ["block1","bottlenest2"],
+        ["block2","bottlenest2"],
+        ["block3","bottlenest2"],
+        ["block4","bottlenest2"],
+        ["block5","bottlenest2transformerropesg"],
+        ["block6","bottlenest2transformerropesg"],
+        ["block7","bottlenest2transformerropesg"],
+        ["block8","bottlenest2transformerropesg"],
+    ]},
+
+    "b6c384h6nbttflrs-dwc": {**b6c384h6nbttflrs, "transformer_ffn_depthwise_conv": True},
+    "b6c384h6nbttflrs-qkn": {**b6c384h6nbttflrs, "attention_qk_norm": True},
 }
+
 
 config_of_name = {}
 for name, base_config in base_config_of_name.items():
@@ -2185,11 +2064,6 @@ for name, base_config in list(config_of_name.items()):
 
 for name, base_config in list(config_of_name.items()):
     config = base_config.copy()
-    config["use_attention_pool"] = True
-    config_of_name[name+"-ap"] = config
-
-for name, base_config in list(config_of_name.items()):
-    config = base_config.copy()
     config["use_repvgg_init"] = True
     config_of_name[name+"-rvgi"] = config
 
@@ -2203,7 +2077,23 @@ for name, base_config in list(config_of_name.items()):
     config_of_name[name+"-rvglr"] = config
 
 for name, base_config in list(config_of_name.items()):
-    # Add intermediate heads, for use with self-distillation or embedding small net in big one.
+    # Trunk channel gate
+    config = base_config.copy()
+    config["use_trunk_channel_gate"] = True
+    config_of_name[name+"-tcg"] = config
+
+for name, base_config in list(config_of_name.items()):
+    # Trunk residual backout: parallel backout trunk that later blocks can learn to subtract
+    config = base_config.copy()
+    config["use_trunk_residual_backout"] = True
+    config_of_name[name+"-trb"] = config
+
+    config = base_config.copy()
+    config["use_trunk_residual_backout"] = True
+    config["trunk_residual_backout_noreg"] = True
+    config_of_name[name+"-trbnr"] = config
+
+for name, base_config in list(config_of_name.items()):
     config = base_config.copy()
     config["has_intermediate_head"] = True
     config["intermediate_head_blocks"] = len(config["block_kind"]) // 2
@@ -2218,6 +2108,25 @@ for name, base_config in list(config_of_name.items()):
         config["intermediate_head_blocks"] = len(config["block_kind"])
         config["trunk_normless"] = True
         config_of_name[name+"-bnh"] = config
+
+    # RMSNorm before heads. No intermediate head.
+    config = base_config.copy()
+    config["trunk_final_rmsnorm"] = True
+    config_of_name[name+"-rnh"] = config
+
+    # RMSNorm spatial before heads. No intermediate head.
+    config = base_config.copy()
+    config["trunk_final_rmsnorm"] = True
+    config["trunk_rmsnorm_spatial"] = True
+    config_of_name[name+"-rsnh"] = config
+
+    # RMSNorm spatial before heads. No intermediate head.
+    config = base_config.copy()
+    config["trunk_final_rmsnorm"] = True
+    config["trunk_rmsnorm_spatial"] = True
+    config["rmsnorm_spatial_cgroup_size"] = 16
+    config_of_name[name+"-rgnh"] = config
+
 
 for name, base_config in list(config_of_name.items()):
     config = base_config.copy()

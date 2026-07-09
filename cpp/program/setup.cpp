@@ -1,6 +1,7 @@
 #include "../program/setup.h"
 
 #include "../core/datetime.h"
+#include "../core/test.h"
 #include "../core/makedir.h"
 #include "../core/fileutils.h"
 #include "../neuralnet/nninterface.h"
@@ -57,7 +58,7 @@ NNEvaluator* Setup::initializeNNEvaluator(
       disableFP16,
       setupFor
     );
-  assert(nnEvals.size() == 1);
+  testAssert(nnEvals.size() == 1);
   return nnEvals[0];
 }
 
@@ -77,8 +78,8 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
   setup_for_t setupFor
 ) {
   vector<NNEvaluator*> nnEvals;
-  assert(nnModelNames.size() == nnModelFiles.size());
-  assert(expectedSha256s.size() == 0 || expectedSha256s.size() == nnModelFiles.size());
+  testAssert(nnModelNames.size() == nnModelFiles.size());
+  testAssert(expectedSha256s.size() == 0 || expectedSha256s.size() == nnModelFiles.size());
 
   #if defined(USE_CUDA_BACKEND)
   string backendPrefix = "cuda";
@@ -256,6 +257,11 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
     string homeDataDirOverride = loadHomeDataDirOverride(cfg);
 
     string backendExtraParam;
+
+    // Backend-specific options (e.g. openclTunerFile, cudaDisableGraphSDPA) are read directly by the
+    // relevant compute backend off of cfg (see createComputeContext). Because they follow the backend
+    // prefix convention, the getBackendPrefixes() loop above already marks them used for the backends
+    // that don't read them, so no explicit mark-used is needed here.
 #if defined(USE_ONNX_BACKEND)
     string onnxProvider = cfg.contains("onnxProvider") ? cfg.getString("onnxProvider") : "cpu";
     backendExtraParam = "provider=" + onnxProvider;
@@ -328,16 +334,6 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
     else if(cfg.contains("useFP16"))
       useFP16Mode = cfg.getEnabled("useFP16");
 
-    enabled_t useNHWCMode = enabled_t::Auto;
-    if(cfg.contains(backendPrefix+"UseNHWC"+idxStr))
-      useNHWCMode = cfg.getEnabled(backendPrefix+"UseNHWC"+idxStr);
-    else if(cfg.contains("useNHWC"+idxStr))
-      useNHWCMode = cfg.getEnabled("useNHWC"+idxStr);
-    else if(cfg.contains(backendPrefix+"UseNHWC"))
-      useNHWCMode = cfg.getEnabled(backendPrefix+"UseNHWC");
-    else if(cfg.contains("useNHWC"))
-      useNHWCMode = cfg.getEnabled("useNHWC");
-
     int forcedSymmetry = -1;
     if(setupFor != SETUP_FOR_DISTRIBUTED && cfg.contains("nnForcedSymmetry"))
       forcedSymmetry = cfg.getInt("nnForcedSymmetry",0,SymmetryHelpers::NUM_SYMMETRIES-1);
@@ -345,7 +341,6 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
     logger.write(
       "After dedups: nnModelFile" + idxStr + " = " + nnModelFile
       + " useFP16 " + useFP16Mode.toString()
-      + " useNHWC " + useNHWCMode.toString()
     );
 
     int nnCacheSizePowerOfTwo =
@@ -393,6 +388,11 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
     if(disableFP16)
       useFP16Mode = enabled_t::False;
 
+    //Pre-warm lazily-compiled backend graphs (e.g. cuDNN SDPA plans for transformer models) when each
+    //server thread's handle is created, so the first searches aren't stalled. On by default.
+    bool disableWarmup =
+      cfg.contains("cudaDisableWarmup") ? cfg.getBool("cudaDisableWarmup") : false;
+
     NNEvaluator* nnEval = new NNEvaluator(
       nnModelName,
       nnModelFile,
@@ -408,14 +408,14 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
       debugSkipNeuralNet,
       backendExtraParam,
       homeDataDirOverride,
-      openCLReTunePerBoardSize,
       useFP16Mode,
-      useNHWCMode,
       numNNServerThreadsPerModel,
       gpuIdxByServerThread,
       nnRandSeed,
       (forcedSymmetry >= 0 ? false : nnRandomize),
-      defaultSymmetry
+      defaultSymmetry,
+      disableWarmup,
+      cfg
     );
 
     nnEval->spawnServerThreads();
@@ -1223,7 +1223,7 @@ std::unique_ptr<PatternBonusTable> Setup::loadAndPruneAutoPatternBonusTables(Con
       int maxTurnNumber = getAutoPatternIntParam(cfg,"autoAvoidRepeatMaxTurnNumber",boardXSize,boardYSize,0,1000000);
       size_t maxPoses = getAutoPatternInt64Param(cfg,"autoAvoidRepeatMaxPoses",boardXSize,boardYSize,0,(int64_t)1000000000000LL);
 
-      string logSource = dirPath;
+      const string& logSource = dirPath;
       patternBonusTable->avoidRepeatedPosMovesAndDeleteExcessFiles({baseDir + "/" + dirName},penalty,lambda,minTurnNumber,maxTurnNumber,maxPoses,logger,logSource);
     }
 
