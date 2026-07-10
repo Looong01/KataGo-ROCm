@@ -288,7 +288,7 @@ of providers actually available on the machine and exit):
   actually detected on the machine and exits.
 * `nvtensorrtrtx` — NVIDIA TensorRT RTX
 * `migraphx` — AMD MIGraphX (also distributed under the Store package name "AMD GPU EP")
-* `vitisai` — AMD VitisAI (NPU)
+* `vitisai` — AMD VitisAI (NPU; also distributed under the Store package name "AMD NPU EP")
 * `qnn` — Qualcomm QNN
 * `cpu` — CPU fallback
 
@@ -297,13 +297,34 @@ Windows ML from the Microsoft Store the first time they're used; `dml` and `cpu`
 available. The Windows App SDK Machine Learning NuGet package is automatically downloaded by CMake
 during the build. No manual SDK installation is required beyond having a compatible GPU/NPU driver.
 
+EP discovery happens entirely at process startup (`NeuralNet::globalInitialize()`), not at compile
+time: primarily via the `WinMLEpCatalog` C API (`EnsureReady` + `GetLibraryPath`), and as a fallback
+if that fails, via a scan of `C:\Program Files\WindowsApps\` performed on whichever machine actually
+runs `katago.exe`. Neither path bakes an absolute path into the binary at build time, so a
+`katago.exe` built on one machine keeps working correctly if copied to another machine with a
+different EP package version installed (or after Microsoft renames/updates a package, e.g.
+`AMD.MIGraphX.EP` -> `AMD.GPU.EP`, `Xilinx.VitisAI.EP` -> `AMD.NPU.EP`).
+
 ##### Minimal KataGo Build Commands (Windows, WinML backend)
 On Windows, `KATAGO_AUTO_FETCH_DEPS=ON` by default, so missing `zlib`, `onnx`, and `protobuf` dependencies are auto-fetched via vcpkg into `cpp/build/deps/vcpkg`.
 
+Always use the Visual Studio generator (adjust `-G` to whatever Visual Studio version/generator name
+you actually have installed, e.g. `"Visual Studio 17 2022"`) for configure, and `cmake --build ...`
+(not a hand-invoked `ninja`/`msbuild`) for the actual build:
+
 ```
 cmake -S cpp -B cpp/build -G "Visual Studio 18 2026" -A x64 -DUSE_BACKEND=WINML
-cmake --build cpp/build --config Release -j
+cmake --build cpp/build --config Release --parallel
 ```
+
+No manual `vcvars64.bat`/`vcvarsall.bat` sourcing is needed before either command, even in a brand
+new shell: unlike the Ninja generator (used by, e.g., the ROCm backend on Windows, where the actual
+build step is a separate `ninja` process that does not inherit whatever environment `cmake` saw
+during configure), the Visual Studio generator's `cmake --build` step delegates to `msbuild.exe`,
+which resolves its own MSVC toolchain from the `.vcxproj` files/registry/VS installation metadata
+regardless of the invoking shell's environment. `Release`/`Debug` builds both live under this same
+single `cpp/build` directory (selected via `--config`), so there is no need for separate build
+directories per configuration.
 
 Typical run config for Intel NPU via OpenVINO:
 * `winmlProvider = openvino`
@@ -313,6 +334,158 @@ Typical run config for Intel NPU via OpenVINO:
 Typical run config for DirectML (GPU):
 * `winmlProvider = dml`
 * `winmlDeviceToUse = 0` (GPU device index)
+
+Compile caching (VitisAI / MIGraphX): both EPs compile the model into a hardware-specific format
+the first time a given model/shape is used (VitisAI NPU compiles can take on the order of 15
+minutes; MIGraphX GPU compiles are faster but still non-trivial). Both are configured to
+persistently cache their compiled output on disk under `<dir containing katago.exe>/KataGoData/EPCache/`
+(`vitisai` / `migraphx` subfolders) so this cost is only paid once per model, not on every process
+launch. This cache location is hardcoded (not a config option) since there's no good reason for a
+user to want a different one.
+
+For `migraphx`, KataGo pins the ONNX graph's batch dimension to a fixed static size so MIGraphX
+compiles exactly once regardless of how the real batch fill level fluctuates at runtime (instead
+of recompiling from scratch, taking minutes, every time it sees a new batch fill level). This
+fixed size defaults to 8 and can be changed via `winmlMigraphxBatchSize` (must not exceed
+`nnMaxBatchSize`; larger values are automatically clamped down).
+
+##### VitisAI (NPU) requires a pre-quantized model
+
+The VitisAI EP only accelerates INT8 ops on the XDNA NPU. An FP32 graph (as KataGo builds on the
+fly from a `.bin.gz` model for every other provider) would otherwise get almost entirely fallen
+back to CPU by VitisAI, silently, defeating the point of using the NPU. To prevent that trap,
+`winmlProvider = vitisai` **requires** a model file whose name ends in `-int8.onnx` -- KataGo
+refuses to start (with a clear error) if given a `.bin.gz` or a plain `.onnx` instead. KataGo also
+sets the ONNX Runtime session option `session.disable_cpu_ep_fallback=1` for this provider, so if
+VitisAI can't claim every node in the graph, session creation fails loudly instead of silently
+running (some or all of) the network on CPU while reporting success.
+
+There's no automated in-process quantization step (this was tried and removed: automating a
+Python/`amd-quark` environment inside KataGo added a large, fragile dependency footprint for a
+one-time step). Quantize offline instead, on any machine (no NPU or Ryzen AI driver needed for the
+quantization step itself -- it only needs to run the FP32 graph on CPU to collect calibration
+statistics; can be a different machine/OS than the one that will actually run katago.exe, including
+Linux, since only step 4 below needs the Python/`amd-quark` environment and nothing else from
+KataGo):
+
+1. **Build KataGo with the WinML backend** (see "Minimal KataGo Build Commands" above) -- this
+   gives you `katago.exe` with the `exportonnx` and `dumpcalibrationdata` subcommands needed below.
+
+2. **Export the FP32 ONNX graph** from your `.bin.gz` model:
+   ```
+   katago.exe exportonnx -model kata1-xxx.bin.gz -o kata1-xxx-fp32.onnx -x 19 -y 19
+   ```
+
+3. **Produce a calibration dataset** with the `dumpcalibrationdata` subcommand -- samples NN input
+   feature tensors from real games, using the exact same feature-encoding code (`NNInputs::fillRowV7`)
+   used at real inference time, so calibration data is guaranteed to match what the network
+   actually sees (do not reimplement feature extraction separately, e.g. in Python -- any mismatch
+   silently degrades quantization quality without erroring):
+   ```
+   katago.exe dumpcalibrationdata -model kata1-xxx.bin.gz -sgfsdir games.sgfs \
+     -output calib.npz -x 19 -y 19 -positions-per-game 1 -max-positions 128
+   ```
+   (`-sgfdir`/`-sgf` also accepted for individual `.sgf` files; `-sgfsdir` takes a `.sgfs`
+   multi-game-per-file bundle or a directory of them.) Use *real* games, not synthetic/test
+   positions -- calibration quality directly determines quantized accuracy. Prefer more distinct
+   games over more positions per game (`-positions-per-game 1`, one per game, maximizes position
+   diversity for a given total count) -- positions from the same game are highly correlated. Keep
+   the total position count modest: empirically, quantization consumes **on the order of 0.5GB of
+   disk cache per calibration position** (quark caches intermediate activations per-sample to
+   disk), so a few hundred positions can consume 100+GB of temp disk space and tens of minutes.
+   64-128 positions is a reasonable default (also `dumpcalibrationdata`'s example above); only go
+   higher if you have the disk/time budget for it.
+
+4. **Set up a Python 3.12 environment** (on whichever machine will run the quantization script;
+   does not need to be Windows or have NPU/Ryzen AI drivers) with:
+   ```
+   pip install numpy onnx onnxruntime
+   pip install torch --index-url https://download.pytorch.org/whl/cpu
+   pip install "amd-quark==0.11.2" --extra-index-url https://pypi.amd.com/quark/cpu/simple
+   ```
+   Pin `amd-quark` to `0.11.2`, not latest -- newer releases (`0.12.x` at time of writing) hard-fail
+   at import time if their custom-ops C++ extension can't be JIT-compiled (which additionally
+   requires `ninja` plus a working C/C++ toolchain on PATH); `0.11.2` degrades this to a harmless
+   warning and falls back to a pure-Python path, which is all a standard CNN like KataGo's needs.
+
+5. **Run the quantization script** (`python/quantize_vitisai.py` in this repo) against the FP32
+   onnx + calibration npz from steps 2-3:
+   ```
+   python quantize_vitisai.py --input kata1-xxx-fp32.onnx --calibration calib.npz --output kata1-xxx-int8.onnx
+   ```
+   This uses `quark.onnx`'s `ModelQuantizer` with the `XINT8_QCONFIG` preset (AMD's recommended
+   power-of-two-scale INT8 scheme for Ryzen AI NPU CNN deployment), falling back to the lower-level
+   `quantize_static` if that preset isn't available in your installed `amd-quark` version.
+
+6. **Copy the resulting `kata1-xxx-int8.onnx`** to the machine running katago.exe and use it
+   directly as the model (the filename must end in `-int8.onnx`, per the requirement above):
+   ```
+   katago.exe gtp -config gtp.cfg -model kata1-xxx-int8.onnx -override-config "winmlProvider=vitisai"
+   ```
+
+**Known issue, confirmed in testing: this EP build does not actually offload to the NPU even for a
+correctly quantized model.** A model quantized via the steps above (verified: valid QDQ INT8 graph,
+all major ops converted, numerically sane inference output -- win/loss probabilities correctly
+normalized, no NaNs) still shows **zero NPU utilization** when checked with AMD's own `xrt-smi
+examine -r aie-partitions` (run continuously during a sustained `kata-analyze` workload -- every
+HW context present belonged to an unrelated Windows system process, none to katago.exe). With
+`session.disable_cpu_ep_fallback=1` (which KataGo now always sets for this provider), this
+manifests as a session-creation error ("this session contains graph nodes that are assigned to the
+default CPU EP...") rather than a silent full-CPU run -- confirming VitisAI genuinely does not
+claim (at least some) nodes in the graph, not a false negative in the utilization check. No
+per-node diagnostic detail is available: neither ONNX Runtime's `SetLogSeverityLevel(VERBOSE)` nor
+the standard `GLOG_minloglevel`/`GLOG_v` environment variables (VitisAI's internal `vaip_core`
+compiler appears to use glog, based on the format of its crash logs) surface which node(s) or op
+type(s) caused the rejection. This looks like an AMD-side EP/quantizer compatibility gap rather
+than anything fixable from KataGo's side; reported upstream. Until resolved, `winmlProvider =
+vitisai` should be expected to fail outright (loudly, thanks to `disable_cpu_ep_fallback`) rather
+than provide a working NPU speedup on this EP build (`VitisAIExecutionProvider` v1.8.63.0).
+
+##### Known WinML/MIGraphX limitations (Store EP package v1.8.57.0)
+
+* **Compile cache does not actually persist to disk.** KataGo sets both the documented
+  `ORT_MIGRAPHX_*` environment variables and (previously) attempted `migraphx_save_compiled_model`
+  / `migraphx_load_compiled_model` provider options, but this Store-distributed EP build honors
+  neither: the `EPCache/migraphx/` directory is created but no `.mxr` file is ever written, and
+  every process launch recompiles from scratch. Worse, passing the provider-option keys causes
+  this specific EP build to hard-fail session creation with `EP_FAIL : Unknown provider option`
+  (unlike most ORT EPs, which silently ignore options they don't recognize) — so KataGo
+  intentionally only sets the env vars, not the provider options, even though neither currently
+  achieves persistence. If a future EP package version fixes this, no KataGo code change should be
+  needed to pick it up.
+* **Output tensors can come back in the wrong slot.** This EP build was observed returning the
+  three `[N,C,1,1]`-shaped outputs (`OutputPolicyPass`, `OutputValue`, `OutputScoreValue` — all
+  rank 4 with H=W=1, indistinguishable to the EP's own bookkeeping) permuted relative to the
+  requested output-name order, even though `Ort::Session::Run()` is documented to return tensors
+  positionally matching the requested names. ONNX Runtime itself logs a `VerifyOutputSizes`
+  warning for each swapped output but still proceeds, so this is silent data corruption unless
+  handled explicitly. KataGo detects and corrects this after every inference call by matching each
+  returned tensor's channel-dimension count against what's expected for
+  PolicyPass/Value/ScoreValue (which differ for any realistic model version), and prints a
+  one-time note to stderr when it has to remap. This is a no-op when the EP returns outputs in the
+  requested order.
+* **Deterministic crash inside the EP's bundled HIP runtime on at least one discrete-GPU (RX 7900
+  XTX / gfx1100) machine.** First-time compile of a large network (e.g. b40) shows several GB of
+  host RAM usage and 100% CPU while MIGraphX compiles on the host side, VRAM usage staying at 0%
+  the entire time, then the process hard-crashes (access violation, uncatchable — not a C++
+  exception) right as CPU usage drops back to 0%. Windows Event Viewer (Application log, event ID
+  1000) pins this to `amdhip64_7.dll` v7.2.2606.20 — the HIP runtime bundled *inside* the Store EP
+  package itself (`.../AMD.GPU.EP.1.8_.../ExecutionProvider/amdhip64_7.dll`), not the machine's
+  regular AMD/ROCm driver install — with exception code `0xc0000005` at the exact same faulting
+  offset (`0x465007`) across independent process runs (both `gtp` and standalone `benchmark`
+  subcommands). Same offset every time means this is a reproducible bug in that bundled runtime
+  build interacting with this GPU, not a memory-pressure/race condition — RAM exhaustion was ruled
+  out (64GB system RAM, 55%+ free). Could not be reproduced on an integrated-GPU+NPU machine, which
+  instead just took ~9 minutes to compile successfully via the same EP package. No known KataGo-side
+  workaround (the crash happens inside third-party closed-source code before session creation
+  returns); on affected discrete-AMD-GPU machines, prefer a native ROCm/OpenCL KataGo build over
+  `winmlProvider=migraphx` until Microsoft/AMD ship a fixed EP package version.
+* **ORT's default console logger writes to stdout**, which corrupts the GTP protocol stream (GTP
+  clients like Sabaki read engine responses from stdout and will report a dead/failed connection
+  if anything else is interleaved in it) — this was especially visible with `migraphx` since the
+  shape-mismatch warning above fires on every single inference call. KataGo now installs a custom
+  ORT logging callback that routes all ONNX Runtime log output to stderr instead, so stdout stays
+  protocol-clean regardless of what ORT logs.
 
 ## MacOS
    * TLDR (Metal backend - recommended for most users, hybrid CPU+GPU+Neural Engine for maximum throughput):

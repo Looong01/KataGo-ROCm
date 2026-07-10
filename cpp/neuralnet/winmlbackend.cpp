@@ -10,6 +10,8 @@
 #include "../neuralnet/nneval.h"
 #include "../neuralnet/nninputs.h"
 #include "../neuralnet/modelversion.h"
+#include "../dataio/homedata.h"
+#include "../core/makedir.h"
 
 #include <onnxruntime_cxx_api.h>
 #include "../neuralnet/onnxmodelbuilder.h"
@@ -26,6 +28,9 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
+#include <cstdlib>
+#include <cctype>
 #include <fstream>
 #include <unordered_map>
 #include <iostream>
@@ -59,14 +64,31 @@ static int detectModelVersion(
 
 //--------------------------------------------------------------
 
+// ONNX Runtime's default console logging sink writes to stdout. KataGo's GTP loop communicates
+// exclusively over stdout, so any interleaved non-protocol text (e.g. the MIGraphX EP's
+// VerifyOutputSizes shape-mismatch warnings, which fire on every single inference call) corrupts
+// the GTP stream and breaks GTP-speaking clients like Sabaki (observed as the client reporting a
+// dead/failed connection mid-analysis). Route all ORT log output to stderr instead via a custom
+// logging callback, so stdout stays protocol-clean regardless of what ORT logs in the future.
+static void ORT_API_CALL ortLogToStderr(
+  void* /*param*/, OrtLoggingLevel /*severity*/, const char* category,
+  const char* logid, const char* /*codeLocation*/, const char* message
+) {
+  cerr << "[onnxruntime:" << (logid ? logid : "") << ", " << (category ? category : "") << "] "
+       << (message ? message : "") << endl;
+}
+
 struct LoadedModel {
   ModelDesc modelDesc;
   bool isRawOnnx;
   string rawOnnxBytes;
+  string fileName;
 
-  LoadedModel(const string& fileName, const string& expectedSha256, bool rawOnnx)
-    : isRawOnnx(rawOnnx)
+  LoadedModel(const string& fileName_, const string& expectedSha256, bool rawOnnx)
+    : isRawOnnx(rawOnnx),
+      fileName(fileName_)
   {
+    const string& fileName = fileName_;
     if(!rawOnnx) {
       ModelDesc::loadFromFileMaybeGZipped(fileName, modelDesc, expectedSha256);
       return;
@@ -87,7 +109,7 @@ struct LoadedModel {
     }
 
     // Create a temporary CPU session to introspect shapes
-    Ort::Env tmpEnv(ORT_LOGGING_LEVEL_WARNING, "KataGoWinMLIntrospect");
+    Ort::Env tmpEnv(ORT_LOGGING_LEVEL_WARNING, "KataGoWinMLIntrospect", ortLogToStderr, nullptr);
     Ort::SessionOptions tmpOpts;
     tmpOpts.SetIntraOpNumThreads(1);
     Ort::Session tmpSession(tmpEnv, rawOnnxBytes.data(), rawOnnxBytes.size(), tmpOpts);
@@ -104,13 +126,21 @@ struct LoadedModel {
       auto typeInfo = tmpSession.GetInputTypeInfo(i);
       auto tensorInfo = typeInfo.GetTensorTypeAndShapeInfo();
       auto shape = tensorInfo.GetShape();
-      if(name.find("spatial") != string::npos) {
+      // Name-based matching must be case-insensitive: the graph node names emitted by
+      // OnnxModelBuilder::build() (and expected by default elsewhere in this file) are
+      // PascalCase ("InputSpatial", "InputGlobal", "InputMask", "InputMeta"), not lowercase.
+      string lowerName = name;
+      for(auto& c : lowerName) c = (char)tolower((unsigned char)c);
+      if(lowerName.find("mask") != string::npos) {
+        // The on-board mask is its own single-channel input, not part of the spatial feature
+        // channel count -- explicitly ignored here so it can't clobber numInputChannels below.
+      } else if(lowerName.find("spatial") != string::npos) {
         if(shape.size() >= 2)
           numInputChannels = (int)shape[1];
-      } else if(name.find("global") != string::npos) {
+      } else if(lowerName.find("global") != string::npos) {
         if(shape.size() >= 2)
           numInputGlobalChannels = (int)shape[1];
-      } else if(name.find("meta") != string::npos) {
+      } else if(lowerName.find("meta") != string::npos) {
         if(shape.size() >= 2)
           numInputMetaChannels = (int)shape[1];
       } else if(shape.size() == 4) {
@@ -138,16 +168,20 @@ struct LoadedModel {
       auto tensorInfo = typeInfo.GetTensorTypeAndShapeInfo();
       auto shape = tensorInfo.GetShape();
 
-      if(name.find("policy") != string::npos) {
+      // Case-insensitive for the same reason as the input-side matching above; also match
+      // "scorevalue" (the actual "OutputScoreValue" node name), not "miscvalue".
+      string lowerName = name;
+      for(auto& c : lowerName) c = (char)tolower((unsigned char)c);
+      if(lowerName.find("policy") != string::npos) {
         if(shape.size() >= 2)
           numPolicyChannels = (int)shape[1];
-      } else if(name.find("miscvalue") != string::npos) {
+      } else if(lowerName.find("scorevalue") != string::npos) {
         if(shape.size() >= 2)
           numScoreValueChannels = (int)shape[1];
-      } else if(name.find("value") != string::npos) {
+      } else if(lowerName.find("value") != string::npos) {
         if(shape.size() >= 2)
           numValueChannels = (int)shape[1];
-      } else if(name.find("ownership") != string::npos) {
+      } else if(lowerName.find("ownership") != string::npos) {
         if(shape.size() >= 2)
           numOwnershipChannels = (int)shape[1];
       }
@@ -243,6 +277,9 @@ static const wchar_t* kStoreEpPackageFamilies[] = {
   L"MicrosoftCorporationII.WinML.AMD.GPU.EP_8wekyb3d8bbwe",
   L"MicrosoftCorporationII.WinML.Xilinx.VitisAI.EP_8wekyb3d8bbwe",
   L"MicrosoftCorporationII.WinML.Xilinx.VitisAI.EP.1.8_8wekyb3d8bbwe",
+  // Microsoft renamed this package from "Xilinx.VitisAI.EP" to "AMD.NPU.EP" (still the VitisAI EP).
+  L"MicrosoftCorporationII.WinML.AMD.NPU.EP.1.8_8wekyb3d8bbwe",
+  L"MicrosoftCorporationII.WinML.AMD.NPU.EP_8wekyb3d8bbwe",
   L"MicrosoftCorporationII.WinML.Qualcomm.QNN.EP_8wekyb3d8bbwe",
   L"MicrosoftCorporationII.WinML.Qualcomm.QNN.EP.1.8_8wekyb3d8bbwe",
 };
@@ -333,6 +370,36 @@ static void tryActivateStoreEpPackages() {
 
 #endif // _WIN32
 
+// Returns (creating if necessary) a hardcoded, non-configurable persistent cache directory for a
+// given execution provider, under the same per-installation "home data dir" KataGo already uses
+// elsewhere (see dataio/homedata.cpp -- on Windows this is "<dir containing katago.exe>/KataGoData").
+// Both VitisAI (NPU compile, can take on the order of 15 minutes) and MIGraphX (GPU compile) need
+// *some* persistent on-disk cache location to avoid recompiling the model on every process launch,
+// and there's no good reason for a user to want a different location, so this is intentionally not
+// exposed as a config option.
+static string getWinmlEpCacheDir(const string& subdirName) {
+  string homeDataDir = HomeData::getHomeDataDir(/*makeDir=*/true, "");
+  string epCacheDir = homeDataDir + "/EPCache";
+  MakeDir::make(epCacheDir);
+  string subDir = epCacheDir + "/" + subdirName;
+  MakeDir::make(subDir);
+  return subDir;
+}
+
+// Sanitizes a string for use as (part of) a filename: keeps alphanumerics, '-', '_', '.', and
+// replaces everything else with '_'.
+static string sanitizeForFilename(const string& s) {
+  string out;
+  out.reserve(s.size());
+  for(char c : s) {
+    if(isalnum((unsigned char)c) || c == '-' || c == '_' || c == '.')
+      out.push_back(c);
+    else
+      out.push_back('_');
+  }
+  return out;
+}
+
 struct ComputeContext {
   Ort::Env env;
   int nnXLen;
@@ -344,6 +411,11 @@ struct ComputeContext {
   string openvinoDeviceId;
   bool openvinoEnableNPUFastCompile;
   string openvinoCacheDir;
+
+  // MIGraphX-specific option: the fixed/pinned batch size used to make the ONNX graph's shape
+  // fully static (see the ComputeHandle constructor for why). Configurable via winmlMigraphxBatchSize
+  // since the ideal value may depend on the model / hardware; defaults to 8.
+  int migraphxBatchSize;
 
   // Configurable input/output node names. Defaults match the node names emitted by the shared
   // OnnxModelBuilder::build() (see onnxmodelbuilder.cpp) used for .bin.gz -> ONNX conversion,
@@ -363,7 +435,7 @@ struct ComputeContext {
   int configModelVersion;
 
   ComputeContext(int xLen, int yLen, const string& provider)
-    : env(ORT_LOGGING_LEVEL_WARNING, "KataGoWinML"),
+    : env(ORT_LOGGING_LEVEL_WARNING, "KataGoWinML", ortLogToStderr, nullptr),
       nnXLen(xLen),
       nnYLen(yLen),
       providerName(provider),
@@ -371,6 +443,7 @@ struct ComputeContext {
       openvinoDeviceId(""),
       openvinoEnableNPUFastCompile(false),
       openvinoCacheDir(""),
+      migraphxBatchSize(8),
       inputMaskName("InputMask"),
       inputSpatialName("InputSpatial"),
       inputGlobalName("InputGlobal"),
@@ -435,14 +508,22 @@ struct ComputeHandle {
   int numOwnershipChannels;
   int numInputMetaChannels;
   int policyResultLen;
-  bool fixedBatchOne;  // NPU requires batch=1; getOutput must loop
+  // 0 = fully dynamic batch dimension (default). Otherwise the ONNX session was created with
+  // the "batch" free dimension pinned to this exact value, and getOutput() must always feed
+  // tensors of exactly this size (padding with left-over buffer contents if the real batch is
+  // smaller) and run in chunks of this size. Used for:
+  //  - OpenVINO NPU: fixedBatchSize=1 (NPU requires a fully static shape; one sample at a time).
+  //  - MIGraphX: fixedBatchSize=maxBatchSize (pinning the shape avoids MIGraphX recompiling its
+  //    program from scratch every time it sees a different actual batch fill level, which was
+  //    observed to take minutes per distinct batch size).
+  int fixedBatchSize;
 
   vector<string> inputNames;
   vector<string> outputNames;
   vector<const char*> inputNamePtrs;
   vector<const char*> outputNamePtrs;
 
-  ComputeHandle(ComputeContext* ctx, const LoadedModel& loadedModel, Logger* logger, int deviceIdxForThread)
+  ComputeHandle(ComputeContext* ctx, const LoadedModel& loadedModel, Logger* logger, int deviceIdxForThread, int maxBatchSizeForFixedShape)
     : context(ctx),
       modelVersion(loadedModel.modelDesc.modelVersion),
       numInputChannels(loadedModel.modelDesc.numInputChannels),
@@ -453,7 +534,7 @@ struct ComputeHandle {
       numOwnershipChannels(loadedModel.modelDesc.numOwnershipChannels),
       numInputMetaChannels(loadedModel.modelDesc.numInputMetaChannels),
       policyResultLen(ctx->nnXLen * ctx->nnYLen + 1),
-      fixedBatchOne(false)
+      fixedBatchSize(0)
   {
     if(ctx->configModelVersion >= 0)
       modelVersion = ctx->configModelVersion;
@@ -492,16 +573,49 @@ struct ComputeHandle {
     const string& provider = ctx->providerName;
     int deviceIdx = deviceIdxForThread >= 0 ? deviceIdxForThread : 0;
 
-    // NPU requires static shapes — override the dynamic batch dimension "N" to 1.
+    // NPU requires static shapes — override the dynamic batch dimension to 1.
     // This must be set before appending any execution provider.
+    // Graphs built by OnnxModelBuilder::build() (used for .bin.gz models) name the batch
+    // free-dimension "batch" (not "N") — see onnxmodelbuilder.cpp's addInput()/addInputNC11().
+    // AddFreeDimensionOverrideByName() is a no-op for names that don't appear in the graph, so
+    // it's safe to also try "N" in case a hand-exported raw .onnx model uses that convention.
     if(provider == "openvino") {
       string upperDevType = ctx->openvinoDeviceType;
       for(auto& c : upperDevType) c = toupper(c);
       if(upperDevType == "NPU") {
+        sessionOpts.AddFreeDimensionOverrideByName("batch", 1);
         sessionOpts.AddFreeDimensionOverrideByName("N", 1);
-        fixedBatchOne = true;
+        fixedBatchSize = 1;
         if(logger != NULL)
-          logger->write("WinML backend: fixed batch dimension N=1 for NPU");
+          logger->write("WinML backend: fixed batch dimension =1 for NPU");
+      }
+    }
+
+    // MIGraphX has been observed to recompile its program from scratch (taking minutes) every
+    // time session->Run() is called with a batch fill level it hasn't seen before, since KataGo's
+    // actual batch size varies call-to-call. Pinning the "batch" free dimension to a fixed size
+    // (configurable via winmlMigraphxBatchSize, default 8) makes the shape fully static so
+    // MIGraphX only compiles once (at session-creation / first-Run time), at the cost of always
+    // running inference on a padded full-size batch (extra rows are discarded, not read back).
+    if(provider == "migraphx") {
+      // Can't pin to something bigger than the actual allocated input-buffer capacity
+      // (maxBatchSizeForFixedShape, i.e. nnMaxBatchSize) -- getOutput() would read/write past the
+      // end of the input/output buffers when padding a call up to the fixed size.
+      int migraphxPin = ctx->migraphxBatchSize;
+      if(maxBatchSizeForFixedShape > 0 && migraphxPin > maxBatchSizeForFixedShape) {
+        if(logger != NULL)
+          logger->write("WinML backend: winmlMigraphxBatchSize (" + Global::intToString(migraphxPin) +
+                         ") exceeds nnMaxBatchSize (" + Global::intToString(maxBatchSizeForFixedShape) +
+                         "), clamping down to nnMaxBatchSize");
+        migraphxPin = maxBatchSizeForFixedShape;
+      }
+      if(migraphxPin > 0) {
+        sessionOpts.AddFreeDimensionOverrideByName("batch", migraphxPin);
+        sessionOpts.AddFreeDimensionOverrideByName("N", migraphxPin);
+        fixedBatchSize = migraphxPin;
+        if(logger != NULL)
+          logger->write("WinML backend: fixed batch dimension =" + Global::intToString(migraphxPin) +
+                         " for MIGraphX (avoids per-batch-size recompilation)");
       }
     }
 
@@ -608,6 +722,30 @@ struct ComputeHandle {
       std::unordered_map<std::string, std::string> migraphxOpts;
       migraphxOpts["device_id"] = Global::intToString(deviceIdx);
 
+      // Hardcoded persistent on-disk compile cache so MIGraphX doesn't have to recompile the
+      // (now fixed-shape, see above) graph on every process launch. Not exposed as a config
+      // option -- see getWinmlEpCacheDir(). ORT_MIGRAPHX_MODEL_CACHE_PATH is a process
+      // environment variable read internally by the MIGraphX EP. NOTE: this Store-distributed EP
+      // package (observed: MIGraphXExecutionProvider v1.8.57.0) hard-rejects unrecognized
+      // provider-option keys with EP_FAIL at session-creation time (unlike most ORT EPs, which
+      // silently ignore unknown options), so provider-option-based cache keys (e.g.
+      // "migraphx_load_compiled_model") MUST NOT be added here speculatively -- doing so breaks
+      // session creation outright rather than merely failing to cache. Stick to env vars only.
+      {
+        static std::mutex cacheEnvMutex;
+        std::lock_guard<std::mutex> lock(cacheEnvMutex);
+        string cacheDir = getWinmlEpCacheDir("migraphx");
+        string cacheFile = cacheDir + "/" + sanitizeForFilename(loadedModel.modelDesc.name) +
+          "_b" + Global::intToString(fixedBatchSize) + "_dev" + Global::intToString(deviceIdx) + ".mxr";
+        _putenv_s("ORT_MIGRAPHX_MODEL_CACHE_PATH", cacheFile.c_str());
+        _putenv_s("ORT_MIGRAPHX_SAVE_COMPILED_MODEL", "1");
+        _putenv_s("ORT_MIGRAPHX_SAVE_COMPILED_PATH", cacheFile.c_str());
+        _putenv_s("ORT_MIGRAPHX_LOAD_COMPILED_MODEL", "1");
+        _putenv_s("ORT_MIGRAPHX_LOAD_COMPILED_PATH", cacheFile.c_str());
+        if(logger != NULL)
+          logger->write("WinML backend: MIGraphX compile cache file = " + cacheFile);
+      }
+
       if(g_migraphxEpCatalogReady) {
         if(logger != NULL)
           logger->write("WinML backend: enumerating EP devices for MIGraphX...");
@@ -666,6 +804,17 @@ struct ComputeHandle {
     } else if(provider == "vitisai") {
       std::unordered_map<std::string, std::string> vitisOpts;
 
+      // Hardcoded persistent on-disk compile cache so the NPU compile (which can take on the
+      // order of 15 minutes) only has to happen once per model, not on every process launch. Not
+      // exposed as a config option -- see getWinmlEpCacheDir(). The VitisAI EP's
+      // enable_cache_file_io_in_mem provider option defaults to 1 (in-memory only -- nothing is
+      // ever written to cache_dir), so it must be explicitly set to 0 to make the compiled model
+      // actually persist to disk across runs.
+      vitisOpts["cache_dir"] = getWinmlEpCacheDir("vitisai");
+      vitisOpts["enable_cache_file_io_in_mem"] = "0";
+      if(logger != NULL)
+        logger->write("WinML backend: VitisAI compile cache_dir = " + vitisOpts["cache_dir"]);
+
       if(g_vitisaiEpCatalogReady) {
         if(logger != NULL)
           logger->write("WinML backend: enumerating EP devices for VitisAI...");
@@ -689,8 +838,20 @@ struct ComputeHandle {
       } else {
         sessionOpts.AppendExecutionProvider("VitisAI", vitisOpts);
       }
+      // Force a hard failure at session-creation time if any node can't be claimed by VitisAI,
+      // instead of ONNX Runtime silently assigning it to the always-registered CPU EP. Without
+      // this, "session created successfully" is not evidence that anything actually runs on the
+      // NPU -- observed in practice: a quantized model loaded and ran with sane outputs while
+      // `xrt-smi examine -r aie-partitions` showed zero HW contexts owned by this process (every
+      // node had silently gone to CPU). The resulting error is only session-level ("this session
+      // contains CPU EP nodes"), not a per-node breakdown -- VitisAI's own node-assignment
+      // reasoning lives inside its closed-source vaip_core compiler (glog-based logging that
+      // doesn't respond to ORT's SetLogSeverityLevel or GLOG_* env vars, at least not usefully in
+      // this EP build) -- but a loud failure here is still strictly better than silent full-CPU
+      // execution that looks like it's working.
+      sessionOpts.AddConfigEntry("session.disable_cpu_ep_fallback", "1");
       if(logger != NULL)
-        logger->write("WinML backend: VitisAI execution provider enabled");
+        logger->write("WinML backend: VitisAI execution provider enabled, CPU fallback disabled (session.disable_cpu_ep_fallback=1)");
 
     } else if(provider == "cpu" || provider.empty()) {
       if(logger != NULL)
@@ -867,22 +1028,64 @@ static std::wstring findEpLibraryPath(WinMLEpCatalogHandle catalog, const char* 
 }
 #endif // WINML_HAS_EP_CATALOG
 
-// Find the EP plugin DLL inside a Store EP directory.
+// Find the EP plugin DLL inside a Store EP directory (dirPath is a wide string).
 // Store EP dirs contain files like onnxruntime_providers_openvino_plugin.dll.
-static std::wstring findEpDllInDir(const char* dirPath, const char* dllPattern) {
-  string dir(dirPath);
+static std::wstring findEpDllInDirW(const std::wstring& dirPathIn, const wchar_t* dllPattern) {
+  std::wstring dir(dirPathIn);
   // Normalize path separators
-  for(auto& c : dir) { if(c == '\\') c = '/'; }
-  if(!dir.empty() && dir.back() != '/') dir += '/';
+  for(auto& c : dir) { if(c == L'/') c = L'\\'; }
+  if(!dir.empty() && dir.back() != L'\\') dir += L'\\';
 
   WIN32_FIND_DATAW findData;
-  std::wstring searchPattern = toWide((dir + dllPattern).c_str());
+  std::wstring searchPattern = dir + dllPattern;
   HANDLE hFind = FindFirstFileW(searchPattern.c_str(), &findData);
   if(hFind == INVALID_HANDLE_VALUE)
     return {};
-  std::wstring result = toWide(dir.c_str()) + findData.cFileName;
+  std::wstring result = dir + findData.cFileName;
   FindClose(hFind);
   return result;
+}
+
+// Scan "C:\Program Files\WindowsApps\" (at process startup, on whichever machine actually
+// runs this binary) for a package directory whose name matches any of the given wildcard
+// patterns (e.g. L"MicrosoftCorporationII.WinML.AMD.GPU.EP.*"), and return
+// "<match>\ExecutionProvider" for the highest-sorting match, or empty if none found.
+//
+// This is intentionally NOT a path baked in at compile time: Store EP package directory
+// names embed a version number (e.g. "...EP.1.8_1.8.57.0_x64__8wekyb3d8bbwe") that can
+// differ between the machine that built katago.exe and the machine that runs it, and
+// Microsoft has also renamed some of these packages over time (MIGraphX -> AMD.GPU,
+// VitisAI -> AMD.NPU). Doing the directory scan at runtime keeps this working regardless
+// of build machine, EP package version, or naming, as long as the family prefix matches.
+static std::wstring findStoreEpDirRuntime(const vector<wstring>& patterns) {
+  static const wchar_t* kWindowsAppsDir = L"C:\\Program Files\\WindowsApps\\";
+  std::wstring best;
+  for(const auto& pattern : patterns) {
+    std::wstring searchPath = std::wstring(kWindowsAppsDir) + pattern;
+    WIN32_FIND_DATAW findData;
+    HANDLE hFind = FindFirstFileW(searchPath.c_str(), &findData);
+    if(hFind == INVALID_HANDLE_VALUE)
+      continue;
+    do {
+      if(!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+        continue;
+      std::wstring name(findData.cFileName);
+      if(name == L"." || name == L"..")
+        continue;
+      // Natural-ish comparison: plain lexicographic is good enough here since these
+      // package names share a common prefix and the version fields are fixed-width.
+      if(name > best)
+        best = name;
+    } while(FindNextFileW(hFind, &findData));
+    FindClose(hFind);
+  }
+  if(best.empty())
+    return {};
+  std::wstring dir = std::wstring(kWindowsAppsDir) + best + L"\\ExecutionProvider";
+  DWORD attrs = GetFileAttributesW(dir.c_str());
+  if(attrs == INVALID_FILE_ATTRIBUTES || !(attrs & FILE_ATTRIBUTE_DIRECTORY))
+    return {};
+  return dir;
 }
 
 void NeuralNet::globalInitialize() {
@@ -914,9 +1117,10 @@ void NeuralNet::globalInitialize() {
       g_migraphxEpLibPath = findEpLibraryPath(catalog, "MIGraphX",
         {"MIGraphXExecutionProvider", "MIGraphXEP", "migraphx", "AMD GPU", "AMDGPUExecutionProvider"}, g_migraphxEpCatalogReady);
 
-      // Try to find VitisAI EP
+      // Try to find VitisAI EP. Microsoft has shipped this package under both
+      // "Xilinx.VitisAI.EP" and "AMD.NPU.EP" naming; try both name variants.
       g_vitisaiEpLibPath = findEpLibraryPath(catalog, "VitisAI",
-        {"VitisAIExecutionProvider", "VitisAIEP", "vitisai"}, g_vitisaiEpCatalogReady);
+        {"VitisAIExecutionProvider", "VitisAIEP", "vitisai", "AMD NPU", "AMDNPUExecutionProvider"}, g_vitisaiEpCatalogReady);
 
       // Try to find QNN EP
       g_qnnEpLibPath = findEpLibraryPath(catalog, "QNN",
@@ -925,37 +1129,75 @@ void NeuralNet::globalInitialize() {
       WinMLEpCatalogRelease(catalog);
     } else {
       cout << "WinML backend: EP catalog unavailable (hr=0x" << std::hex << hr << std::dec
-           << "), falling back to compile-time paths." << endl;
+           << "), falling back to a runtime directory scan." << endl;
     }
   }
 #endif
 
-  // Step 3: Fallback — use compile-time discovered Store EP directories.
-  // NOTE: EPs loaded via fallback were NOT initialized by EnsureReady,
-  // which may cause crashes. The Dynamic Dependencies + Catalog path above is preferred.
-#ifdef WINML_STORE_OPENVINO_EP_DIR
+  // Step 3: Fallback — scan C:\Program Files\WindowsApps\ on THIS machine at runtime.
+  // NOTE: EPs loaded via fallback were NOT initialized by EnsureReady, which may skip some
+  // setup EnsureReady would otherwise perform. The Dynamic Dependencies + Catalog path above
+  // is preferred; this only runs if that path failed to find the EP (e.g. unpackaged-app
+  // limitations, or a catalog/package-name mismatch after a Microsoft package rename).
+  // Deliberately not a compile-time path: it is re-discovered every time katago.exe starts,
+  // so a prebuilt exe copied to a different machine (different EP package version, or a
+  // renamed package) still finds the EP correctly.
   if(g_openvinoEpLibPath.empty()) {
-    g_openvinoEpLibPath = findEpDllInDir(WINML_STORE_OPENVINO_EP_DIR, "onnxruntime_providers_openvino*.dll");
-    if(!g_openvinoEpLibPath.empty())
-      cout << "WinML backend: Found OpenVINO EP DLL via compile-time path (no EnsureReady!)" << endl;
+    std::wstring dir = findStoreEpDirRuntime({L"MicrosoftCorporationII.WinML.Intel.OpenVINO.EP.*"});
+    if(!dir.empty()) {
+      g_openvinoEpLibPath = findEpDllInDirW(dir, L"onnxruntime_providers_openvino*.dll");
+      if(!g_openvinoEpLibPath.empty())
+        cout << "WinML backend: Found OpenVINO EP DLL via runtime directory scan (no EnsureReady!)" << endl;
+    }
   }
-#endif
-#ifdef WINML_STORE_NVTRT_RTX_EP_DIR
   if(g_nvtrtRtxEpLibPath.empty()) {
-    g_nvtrtRtxEpLibPath = findEpDllInDir(WINML_STORE_NVTRT_RTX_EP_DIR, "onnxruntime_providers_nv_tensorrt_rtx*.dll");
-    if(!g_nvtrtRtxEpLibPath.empty())
-      cout << "WinML backend: Found NvTensorRtRtx EP DLL via compile-time path (no EnsureReady!)" << endl;
+    std::wstring dir = findStoreEpDirRuntime({L"MicrosoftCorporationII.WinML.NVIDIA.TRT-RTX.EP.*"});
+    if(!dir.empty()) {
+      g_nvtrtRtxEpLibPath = findEpDllInDirW(dir, L"onnxruntime_providers_nv_tensorrt_rtx*.dll");
+      if(!g_nvtrtRtxEpLibPath.empty())
+        cout << "WinML backend: Found NvTensorRtRtx EP DLL via runtime directory scan (no EnsureReady!)" << endl;
+    }
   }
-#endif
-#ifdef WINML_STORE_MIGRAPHX_EP_DIR
   if(g_migraphxEpLibPath.empty()) {
-    g_migraphxEpLibPath = findEpDllInDir(WINML_STORE_MIGRAPHX_EP_DIR, "onnxruntime_providers_migraphx*.dll");
-    if(g_migraphxEpLibPath.empty())
-      g_migraphxEpLibPath = findEpDllInDir(WINML_STORE_MIGRAPHX_EP_DIR, "migraphx-ep.dll");
-    if(!g_migraphxEpLibPath.empty())
-      cout << "WinML backend: Found MIGraphX EP DLL via compile-time path (no EnsureReady!)" << endl;
+    // Microsoft has shipped this package under both "AMD.MIGraphX.EP" and "AMD.GPU.EP"
+    // naming (still MIGraphX under the hood). Only match GPU-specific patterns here —
+    // do NOT use a broad "AMD.*.EP.*" glob, since that would also match the unrelated
+    // AMD.NPU.EP (VitisAI) package directory.
+    std::wstring dir = findStoreEpDirRuntime({
+      L"MicrosoftCorporationII.WinML.AMD.GPU.EP.*",
+      L"MicrosoftCorporationII.WinML.AMD.MIGraphX.EP*",
+    });
+    if(!dir.empty()) {
+      g_migraphxEpLibPath = findEpDllInDirW(dir, L"onnxruntime_providers_migraphx*.dll");
+      if(g_migraphxEpLibPath.empty())
+        g_migraphxEpLibPath = findEpDllInDirW(dir, L"migraphx-ep.dll");
+      if(!g_migraphxEpLibPath.empty())
+        cout << "WinML backend: Found MIGraphX EP DLL via runtime directory scan (no EnsureReady!)" << endl;
+    }
   }
-#endif
+  if(g_vitisaiEpLibPath.empty()) {
+    // Microsoft has shipped this package under both "Xilinx.VitisAI.EP" and "AMD.NPU.EP"
+    // naming (still VitisAI under the hood).
+    std::wstring dir = findStoreEpDirRuntime({
+      L"MicrosoftCorporationII.WinML.AMD.NPU.EP.*",
+      L"MicrosoftCorporationII.WinML.Xilinx.VitisAI.EP*",
+    });
+    if(!dir.empty()) {
+      g_vitisaiEpLibPath = findEpDllInDirW(dir, L"onnxruntime_providers_vitisai*.dll");
+      if(g_vitisaiEpLibPath.empty())
+        g_vitisaiEpLibPath = findEpDllInDirW(dir, L"vitisai-ep.dll");
+      if(!g_vitisaiEpLibPath.empty())
+        cout << "WinML backend: Found VitisAI EP DLL via runtime directory scan (no EnsureReady!)" << endl;
+    }
+  }
+  if(g_qnnEpLibPath.empty()) {
+    std::wstring dir = findStoreEpDirRuntime({L"MicrosoftCorporationII.WinML.Qualcomm.QNN.EP.*"});
+    if(!dir.empty()) {
+      g_qnnEpLibPath = findEpDllInDirW(dir, L"onnxruntime_providers_qnn*.dll");
+      if(!g_qnnEpLibPath.empty())
+        cout << "WinML backend: Found QNN EP DLL via runtime directory scan (no EnsureReady!)" << endl;
+    }
+  }
 
   // Step 4: Add EP directories to DLL search path so plugin dependencies are found.
   if(!g_openvinoEpLibPath.empty()) {
@@ -1089,7 +1331,6 @@ ComputeContext* NeuralNet::createComputeContext(
   (void)gpuIdxs;
   (void)homeDataDirOverride;
   (void)useFP16Mode;
-  (void)loadedModel;
 
   // No default provider: winmlProvider must be explicitly set in the config or via -override-config.
   string providerName = cfg.contains("winmlProvider") ? Global::toLower(cfg.getString("winmlProvider")) : "";
@@ -1123,6 +1364,25 @@ ComputeContext* NeuralNet::createComputeContext(
       "Available providers on this machine: " + listAvailableProviders());
   }
 
+  // VitisAI only accelerates INT8 ops on the NPU -- feeding it an FP32 graph (as built on the fly
+  // from a .bin.gz model) runs almost entirely on CPU, which is silently useless rather than an
+  // outright error, so require a pre-quantized model explicitly instead of allowing that trap.
+  // Quantize offline on a machine with AMD's amd-quark installed (no NPU/driver required for the
+  // quantization step itself) -- see the WinML section of Compiling.md for the full workflow.
+  if(providerName == "vitisai") {
+    bool isInt8Onnx = loadedModel->isRawOnnx && Global::isSuffix(loadedModel->fileName, "-int8.onnx");
+    if(!isInt8Onnx) {
+      throw StringError(
+        "WinML backend: provider 'vitisai' requires a pre-quantized INT8 ONNX model (a file whose "
+        "name ends in '-int8.onnx'), but was given '" + loadedModel->fileName + "'. The VitisAI NPU "
+        "execution provider only accelerates INT8 ops -- an FP32 graph built on the fly from a "
+        ".bin.gz model would run almost entirely on CPU. Quantize the model offline first (see the "
+        "WinML section of Compiling.md for the full manual workflow) and pass the resulting "
+        "*-int8.onnx file via -model instead."
+      );
+    }
+  }
+
   if(logger != NULL)
     logger->write("WinML backend: creating compute context for " +
                    Global::intToString(nnXLen) + "x" + Global::intToString(nnYLen) +
@@ -1145,6 +1405,11 @@ ComputeContext* NeuralNet::createComputeContext(
   if(cfg.contains("winmlOpenVINOEnableNPUFastCompile"))
     ctx->openvinoEnableNPUFastCompile = cfg.getBool("winmlOpenVINOEnableNPUFastCompile");
   if(cfg.contains("winmlOpenVINOCacheDir")) ctx->openvinoCacheDir = cfg.getString("winmlOpenVINOCacheDir");
+  if(cfg.contains("winmlMigraphxBatchSize")) {
+    int v = Global::stringToInt(cfg.getString("winmlMigraphxBatchSize"));
+    if(v > 0)
+      ctx->migraphxBatchSize = v;
+  }
   if(cfg.contains("winmlModelVersion")) {
     int v = Global::stringToInt(cfg.getString("winmlModelVersion"));
     if(v >= 0)
@@ -1179,7 +1444,6 @@ ComputeHandle* NeuralNet::createComputeHandle(
   int gpuIdxForThisThread,
   int serverThreadIdx
 ) {
-  (void)maxBatchSize;
   (void)requireExactNNLen;
   if(inputsUseNHWC)
     throw StringError("WinML backend: inputsUseNHWC = true not supported, must use NCHW");
@@ -1200,7 +1464,7 @@ ComputeHandle* NeuralNet::createComputeHandle(
                   " deviceIdx=" + deviceInfo);
   }
 
-  return new ComputeHandle(context, *loadedModel, logger, gpuIdxForThisThread);
+  return new ComputeHandle(context, *loadedModel, logger, gpuIdxForThisThread, maxBatchSize);
 }
 
 void NeuralNet::freeComputeHandle(ComputeHandle* computeHandle) {
@@ -1299,10 +1563,13 @@ void NeuralNet::getOutput(
 
   assert((int)outputs.size() == batchSize);
 
-  // When fixedBatchOne is true (NPU), we must run inference one sample at a time
-  // because the session was compiled with a fixed batch dimension of 1.
-  const int inferBatchSize = computeHandle->fixedBatchOne ? 1 : batchSize;
-  const int numInferCalls = computeHandle->fixedBatchOne ? batchSize : 1;
+  // When fixedBatchSize > 0 (NPU: 1, or MIGraphX: maxBatchSize), the session was compiled with a
+  // static batch dimension of that exact size, so every Run() call must be fed tensors of exactly
+  // that size (padded with left-over buffer contents past the real batchSize, if smaller) and we
+  // only read back/write out the first `rowsToWrite` of each chunk's actual results.
+  const int fixedBatchSize = computeHandle->fixedBatchSize;
+  const int inferBatchSize = fixedBatchSize > 0 ? fixedBatchSize : batchSize;
+  const int numInferCalls = fixedBatchSize > 0 ? (batchSize + fixedBatchSize - 1) / fixedBatchSize : 1;
 
   float policyProbsTmp[NNPos::MAX_NN_POLICY_SIZE];
 
@@ -1381,10 +1648,59 @@ void NeuralNet::getOutput(
       computeHandle->outputNamePtrs.size()
     );
 
-    const float* policyPassData = outputTensors[policyPassOutputIdx].GetTensorData<float>();
+    // Some execution providers (observed empirically with the WinML MIGraphX EP) do not honor the
+    // requested output ordering: Run() is documented to return tensors positionally matching the
+    // requested output-name array, but this EP was seen returning the three [N,C,1,1]-shaped
+    // outputs (PolicyPass, Value, ScoreValue -- all rank 4 with H=W=1, so indistinguishable to the
+    // EP's own bookkeeping) cyclically permuted relative to what was requested. Detect this via
+    // each returned tensor's channel dimension (shape[1]), which differs across all three for any
+    // realistic model (PolicyPass=1 or 2, Value=3, ScoreValue=1/2/4/6 depending on modelVersion),
+    // and remap positionally if a mismatch is found. No-op (zero extra cost of consequence) when
+    // the EP already returns outputs in the requested order.
+    int actualPolicyPassIdx = policyPassOutputIdx;
+    int actualValueIdx = valueOutputIdx;
+    int actualMiscvalueIdx = miscvalueOutputIdx;
+    {
+      auto channelsOf = [&](int idx) -> int64_t {
+        auto shape = outputTensors[idx].GetTensorTypeAndShapeInfo().GetShape();
+        return shape.size() >= 2 ? shape[1] : -1;
+      };
+      const int candidateIdxs[3] = {policyPassOutputIdx, valueOutputIdx, miscvalueOutputIdx};
+      const int64_t expectedChannels[3] =
+        {numPolicyChannels, computeHandle->numValueChannels, computeHandle->numScoreValueChannels};
+      int* const targets[3] = {&actualPolicyPassIdx, &actualValueIdx, &actualMiscvalueIdx};
+      bool mismatchFound = false;
+      for(int t = 0; t < 3; t++) {
+        if(channelsOf(candidateIdxs[t]) != expectedChannels[t]) { mismatchFound = true; break; }
+      }
+      if(mismatchFound) {
+        for(int t = 0; t < 3; t++) {
+          *targets[t] = -1;
+          for(int c = 0; c < 3; c++) {
+            if(channelsOf(candidateIdxs[c]) == expectedChannels[t]) {
+              *targets[t] = candidateIdxs[c];
+              break;
+            }
+          }
+          if(*targets[t] < 0)
+            throw StringError(
+              "WinML backend: EP returned PolicyPass/Value/ScoreValue outputs in an unexpected order "
+              "and channel-count-based remap could not resolve it (ambiguous or missing channel-count match)");
+        }
+        static std::atomic<bool> warnedOnce(false);
+        bool expected = false;
+        if(warnedOnce.compare_exchange_strong(expected, true)) {
+          cerr << "WinML backend: note -- execution provider '" << ctx->providerName
+               << "' returned PolicyPass/Value/ScoreValue outputs out of the requested order; "
+                  "auto-remapped by channel count." << endl;
+        }
+      }
+    }
+
+    const float* policyPassData = outputTensors[actualPolicyPassIdx].GetTensorData<float>();
     const float* policyData = outputTensors[policyOutputIdx].GetTensorData<float>();
-    const float* valueData = outputTensors[valueOutputIdx].GetTensorData<float>();
-    const float* miscvalueData = outputTensors[miscvalueOutputIdx].GetTensorData<float>();
+    const float* valueData = outputTensors[actualValueIdx].GetTensorData<float>();
+    const float* miscvalueData = outputTensors[actualMiscvalueIdx].GetTensorData<float>();
     const float* ownershipData = outputTensors[ownershipOutputIdx].GetTensorData<float>();
 
     assert(policyPassData != nullptr);
@@ -1393,7 +1709,11 @@ void NeuralNet::getOutput(
     assert(miscvalueData != nullptr);
     assert(ownershipData != nullptr);
 
-    for(int subRow = 0; subRow < inferBatchSize; subRow++) {
+    // Only the first `rowsToWrite` rows of this chunk correspond to real (non-padding) input
+    // rows; any remainder up to inferBatchSize is padding used solely to keep the tensor shape
+    // static and must not be read back into `outputs` (which only has `batchSize` entries).
+    const int rowsToWrite = std::min(inferBatchSize, batchSize - startRow);
+    for(int subRow = 0; subRow < rowsToWrite; subRow++) {
       const int row = startRow + subRow;
       NNOutput* output = outputs[row];
       assert(output->nnXLen == nnXLen);

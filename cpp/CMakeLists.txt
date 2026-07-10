@@ -476,6 +476,7 @@ add_executable(katago
   command/analysis.cpp
   command/benchmark.cpp
   command/contribute.cpp
+  command/dumpcalibrationdata.cpp
   command/evalsgf.cpp
   command/gatekeeper.cpp
   command/genbook.cpp
@@ -887,50 +888,17 @@ elseif(USE_BACKEND STREQUAL "WINML")
       "and extract to ${WINAI_ML_ROOT}")
   endif()
 
-  # ---- Discover Store-installed EP packages (version-independent) ----
-  # Primary: WinMLEpCatalog C API at runtime. Fallback: compile-time path discovery.
-  if(WIN32)
-    file(GLOB _winml_openvino_ep_dirs
-      "C:/Program Files/WindowsApps/MicrosoftCorporationII.WinML.Intel.OpenVINO.EP.*/ExecutionProvider"
-    )
-    if(_winml_openvino_ep_dirs)
-      list(SORT _winml_openvino_ep_dirs COMPARE NATURAL ORDER DESCENDING)
-      list(GET _winml_openvino_ep_dirs 0 _winml_openvino_ep_dir)
-      string(REPLACE "\\" "/" _winml_openvino_ep_dir "${_winml_openvino_ep_dir}")
-      target_compile_definitions(katago PRIVATE "WINML_STORE_OPENVINO_EP_DIR=\"${_winml_openvino_ep_dir}\"")
-      message(STATUS "WinML: Found Store OpenVINO EP: ${_winml_openvino_ep_dir}")
-    else()
-      message(STATUS "WinML: Store OpenVINO EP not found (install from Microsoft Store)")
-    endif()
-
-    file(GLOB _winml_nvtrt_ep_dirs
-      "C:/Program Files/WindowsApps/MicrosoftCorporationII.WinML.NVIDIA.TRT-RTX.EP.*/ExecutionProvider"
-    )
-    if(_winml_nvtrt_ep_dirs)
-      list(SORT _winml_nvtrt_ep_dirs COMPARE NATURAL ORDER DESCENDING)
-      list(GET _winml_nvtrt_ep_dirs 0 _winml_nvtrt_ep_dir)
-      string(REPLACE "\\" "/" _winml_nvtrt_ep_dir "${_winml_nvtrt_ep_dir}")
-      target_compile_definitions(katago PRIVATE "WINML_STORE_NVTRT_RTX_EP_DIR=\"${_winml_nvtrt_ep_dir}\"")
-      message(STATUS "WinML: Found Store NvTensorRtRtx EP: ${_winml_nvtrt_ep_dir}")
-    else()
-      message(STATUS "WinML: Store NvTensorRtRtx EP not found (install from Microsoft Store)")
-    endif()
-
-    # AMD GPU EP (MIGraphX). Microsoft has shipped this package under both
-    # "AMD.MIGraphX.EP" and "AMD.GPU.EP" naming; match both.
-    file(GLOB _winml_migraphx_ep_dirs
-      "C:/Program Files/WindowsApps/MicrosoftCorporationII.WinML.AMD.*.EP.*/ExecutionProvider"
-    )
-    if(_winml_migraphx_ep_dirs)
-      list(SORT _winml_migraphx_ep_dirs COMPARE NATURAL ORDER DESCENDING)
-      list(GET _winml_migraphx_ep_dirs 0 _winml_migraphx_ep_dir)
-      string(REPLACE "\\" "/" _winml_migraphx_ep_dir "${_winml_migraphx_ep_dir}")
-      target_compile_definitions(katago PRIVATE "WINML_STORE_MIGRAPHX_EP_DIR=\"${_winml_migraphx_ep_dir}\"")
-      message(STATUS "WinML: Found Store MIGraphX EP: ${_winml_migraphx_ep_dir}")
-    else()
-      message(STATUS "WinML: Store MIGraphX/AMD GPU EP not found (install from Microsoft Store)")
-    endif()
-  endif()
+  # ---- Discover Store-installed EP packages ----
+  # Intentionally NOT done here at CMake configure time: Store EP package directories
+  # (under C:\Program Files\WindowsApps\) embed a version number that can differ between
+  # the machine that builds katago.exe and the machine that runs it, and Microsoft has
+  # also renamed some of these packages over time (e.g. MIGraphX -> AMD.GPU.EP,
+  # VitisAI -> AMD.NPU.EP). Baking a discovered path into the binary at compile time would
+  # break as soon as the exe is copied to another machine or the package gets renamed/
+  # updated. Instead, discovery happens at process startup in
+  # NeuralNet::globalInitialize() (winmlbackend.cpp): first via the WinMLEpCatalog C API
+  # (version-independent by design), and if that fails, via a runtime directory scan of
+  # C:\Program Files\WindowsApps\ performed on whichever machine actually runs the binary.
 
   # ---- ONNX protobuf dependencies (for exportonnx command: .bin.gz -> .onnx) ----
   # onnxmodelbuilder.cpp needs onnx_pb.h and protobuf. Same deps as ONNX backend.
@@ -1125,15 +1093,45 @@ else()
   message(SEND_ERROR "${ColorBoldRed}zlib was not found, if zlib is actually installed but not being found you can set ZLIB_INCLUDE_DIR to the directory with zlib.h and other headers, and ZLIB_LIBRARY to the compiled library 'libz.so' on Linux or 'libz.lib' on Windows. On the command line, this is -DZLIB_INCLUDE_DIR=... and -DZLIB_LIBRARY=... ${ColorReset}")
 endif(ZLIB_FOUND)
 
+if(KATAGO_AUTO_FETCH_DEPS)
+  set(_need_libzip_deps FALSE)
+  if((NOT LIBZIP_LIBRARY) OR (NOT LIBZIP_INCLUDE_DIR_ZIP) OR (NOT LIBZIP_INCLUDE_DIR_ZIPCONF))
+    set(_need_libzip_deps TRUE)
+  endif()
+  if(_need_libzip_deps)
+    # libzip's vcpkg port pulls in bzip2 as a dependency (needed for the BZip2 compression
+    # method); since we link against the raw .lib below rather than via vcpkg's CMake config
+    # (which would propagate transitive link deps automatically), bz2 must also be located
+    # and linked explicitly, or the final link fails with unresolved BZ2_bz* symbols.
+    katago_vcpkg_install_if_needed("libzip")
+    set(_katago_vcpkg_installed_root "${KATAGO_VCPKG_ROOT}/installed/${KATAGO_VCPKG_TRIPLET}")
+    if(EXISTS "${_katago_vcpkg_installed_root}/include/zip.h")
+      set(LIBZIP_INCLUDE_DIR_ZIP "${_katago_vcpkg_installed_root}/include" CACHE PATH "Path to directory with zip.h and other header files" FORCE)
+    endif()
+    if(EXISTS "${_katago_vcpkg_installed_root}/include/zipconf.h")
+      set(LIBZIP_INCLUDE_DIR_ZIPCONF "${_katago_vcpkg_installed_root}/include" CACHE PATH "Path to directory with zipconf.h and other header files" FORCE)
+    endif()
+    find_library(_katago_libzip_lib NAMES zip HINTS "${_katago_vcpkg_installed_root}/lib" "${_katago_vcpkg_installed_root}/debug/lib" NO_DEFAULT_PATH)
+    find_library(_katago_bz2_lib NAMES bz2 HINTS "${_katago_vcpkg_installed_root}/lib" "${_katago_vcpkg_installed_root}/debug/lib" NO_DEFAULT_PATH)
+    if(_katago_libzip_lib)
+      if(_katago_bz2_lib)
+        set(LIBZIP_LIBRARY "${_katago_libzip_lib};${_katago_bz2_lib}" CACHE FILEPATH "Path to 'libzip.so' on Linux or 'libzip.lib' or 'zip.lib' on Windows" FORCE)
+      else()
+        set(LIBZIP_LIBRARY "${_katago_libzip_lib}" CACHE FILEPATH "Path to 'libzip.so' on Linux or 'libzip.lib' or 'zip.lib' on Windows" FORCE)
+      endif()
+    endif()
+  endif()
+endif()
+
 find_library(LIBZIP_LIBRARY NAMES zip)
 find_path(LIBZIP_INCLUDE_DIR_ZIP NAMES zip.h)
 find_path(LIBZIP_INCLUDE_DIR_ZIPCONF NAMES zipconf.h)
 if((NOT LIBZIP_LIBRARY) OR (NOT LIBZIP_INCLUDE_DIR_ZIP) OR (NOT LIBZIP_INCLUDE_DIR_ZIPCONF))
   if(BUILD_DISTRIBUTED)
-    message(SEND_ERROR "${ColorBoldRed}WARNING: BUILD_DISTRIBUTED was requested but libzip library was NOT found. KataGo needs this for writing training data so libzip is required. On Linux, install through your normal package manager. On Windows, set LIBZIP_INCLUDE_DIR_ZIP to the directory that includes zip.h and other files, and LIBZIP_INCLUDE_DIR_ZIPCONF to the directory that includes zipconf.h and other files, and LIBZIP_LIBRARY to the libzip.lib or zip.lib file. ${ColorReset}")
+    message(SEND_ERROR "${ColorBoldRed}WARNING: BUILD_DISTRIBUTED was requested but libzip library was NOT found. KataGo needs this for writing training data so libzip is required. On Linux, install through your normal package manager. On Windows, set LIBZIP_INCLUDE_DIR_ZIP to the directory that includes zip.h and other files, and LIBZIP_INCLUDE_DIR_ZIPCONF to the directory that includes zipconf.h and other files, and LIBZIP_LIBRARY to the libzip.lib or zip.lib file, or enable KATAGO_AUTO_FETCH_DEPS=ON to auto-install via vcpkg. ${ColorReset}")
   endif()
   target_compile_definitions(katago PRIVATE NO_LIBZIP)
-  message(WARNING "${ColorBoldRed}WARNING: libzip library was NOT found. KataGo should still work for GTP/matches/analysis if everything else is good, but selfplay for writing training data will not be possible.${ColorReset}")
+  message(WARNING "${ColorBoldRed}WARNING: libzip library was NOT found. KataGo should still work for GTP/matches/analysis if everything else is good, but selfplay for writing training data will not be possible. Enable KATAGO_AUTO_FETCH_DEPS=ON to auto-install libzip via vcpkg.${ColorReset}")
   set(LIBZIP_INCLUDE_DIR_ZIP ${LIBZIP_INCLUDE_DIR_ZIP} CACHE PATH "Path to directory with zip.h and other header files")
   set(LIBZIP_INCLUDE_DIR_ZIPCONF ${LIBZIP_INCLUDE_DIR_ZIPCONF} CACHE PATH "Path to directory with zipconf.h and other header files")
   set(LIBZIP_LIBRARY ${LIBZIP_LIBRARY} CACHE FILEPATH "Path to 'libzip.so' on Linux or 'libzip.lib' or 'zip.lib' on Windows")

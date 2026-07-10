@@ -12,6 +12,7 @@
     - [How To Use](#how-to-use)
       - [ONNX/OpenVINO Intel NPU Quick Start (Windows)](#onnxopenvino-intel-npu-quick-start-windows)
       - [ONNX/OpenVINO Intel NPU Quick Start (Linux)](#onnxopenvino-intel-npu-quick-start-linux)
+      - [WinML (Windows App SDK) Quick Start (Windows)](#winml-windows-app-sdk-quick-start-windows)
       - [Human-style Play and Analysis](#human-style-play-and-analysis)
       - [Other Commands:](#other-commands)
     - [Tuning for Performance](#tuning-for-performance)
@@ -107,7 +108,7 @@ More in detail:
   * TensorRT is similar to CUDA, but only uses NVIDIA's TensorRT framework to run the neural network with more optimized kernels. For modern NVIDIA GPUs, it should work whenever CUDA does and will usually be faster than CUDA or any other backend.
   * Eigen is a *CPU* backend that should work widely *without* needing a GPU or fancy drivers. Use this if you don't have a good GPU or really any GPU at all. It will be quite significantly slower than OpenCL or CUDA, but on a good CPU can still often get 10 to 20 playouts per second if using the smaller (15 or 20) block neural nets. Eigen can also be compiled with AVX2 and FMA support, which can provide a big performance boost for Intel and AMD CPUs from the last few years. However, it will not run at all on older CPUs (and possibly even some recent but low-power modern CPUs) that don't support these fancy vector instructions.
   * ONNX backend uses [ONNX Runtime](https://onnxruntime.ai/). It can use CPU by default, OpenVINO for Intel hardware (including NPU on supported systems), CUDA/TensorRT for NVIDIA GPUs, MIGraphX for AMD GPUs, and CoreML on macOS. Multi-device assignment via `onnxDeviceToUseThread*` is mainly for CUDA/TensorRT/MIGraphX providers, while OpenVINO NPU setups are typically single-device.
-  * WinML backend uses the [Windows App SDK](https://learn.microsoft.com/en-us/windows/ai/) Machine Learning APIs with an EP (Execution Provider) catalog that automatically discovers and manages hardware-specific providers. Supported providers include DirectML (GPU), OpenVINO (Intel GPU/NPU), NvTensorRtRtx (NVIDIA GPU), MIGraphX (AMD GPU), and QNN (Qualcomm NPU). WinML supports both `.onnx` and `.bin.gz` model files (`.bin.gz` models are internally converted to ONNX graphs). This backend is Windows-only.
+  * WinML backend uses the [Windows App SDK](https://learn.microsoft.com/en-us/windows/ai/) Machine Learning APIs with an EP (Execution Provider) catalog that automatically discovers and manages hardware-specific providers. Supported providers include DirectML (GPU), OpenVINO (Intel GPU/NPU), NvTensorRtRtx (NVIDIA GPU), MIGraphX (AMD GPU), VitisAI (AMD NPU), and QNN (Qualcomm NPU). WinML supports both `.onnx` and `.bin.gz` model files (`.bin.gz` models are internally converted to ONNX graphs). This backend is Windows-only.
 
 For **any** implementation, it's recommended that you also tune the number of threads used if you care about optimal performance, as it can make a factor of 2-3 difference in the speed. See "Tuning for Performance" below. However, if you mostly just want to get it working, then the default untuned settings should also be still reasonable.
 
@@ -193,24 +194,43 @@ WinML supports both `.onnx` and `.bin.gz` model files. When using `.bin.gz`, the
 
 Minimal commands:
 ```
-# Benchmark with .bin.gz model on DirectML (default)
-./katago.exe benchmark -model <NEURALNET>.bin.gz -config gtp_custom.cfg
+# Benchmark with .bin.gz model on DirectML
+./katago.exe benchmark -model <NEURALNET>.bin.gz -config gtp_custom.cfg -override-config winmlProvider=dml
 
 # Benchmark with .onnx model on Intel NPU (OpenVINO)
-./katago.exe benchmark -model <NEURALNET>.onnx -config gtp_custom.cfg
+./katago.exe benchmark -model <NEURALNET>.onnx -config gtp_custom.cfg -override-config winmlProvider=openvino,winmlOpenVINODeviceType=NPU
 
 # Run GTP for GUI tools
-./katago.exe gtp -model <NEURALNET>.bin.gz -config gtp_custom.cfg
+./katago.exe gtp -model <NEURALNET>.bin.gz -config gtp_custom.cfg -override-config winmlProvider=dml
 
 # Override provider via command line
 ./katago.exe gtp -model <NEURALNET>.bin.gz -config gtp_custom.cfg -override-config winmlProvider=openvino,winmlOpenVINODeviceType=NPU
 ```
 
+`winmlProvider` is **required** — there is no default provider. If it is unset, or refers to a
+provider not actually available on the machine, KataGo prints the list of providers it detected
+and exits.
+
 Key config options for the WinML backend:
-* `winmlProvider` — execution provider: `dml` (DirectML, default), `openvino`, `nvtensorrtrtx`, `migraphx`, `qnn`, `cpu`
-* `winmlOpenVINODeviceType` — for OpenVINO provider: `NPU`, `GPU`, or `CPU`
+* `winmlProvider` — execution provider: `dml`, `openvino`, `nvtensorrtrtx`, `migraphx`, `vitisai`, `qnn`, `cpu` (required, no default)
+* `winmlOpenVINODeviceType` — for `openvino` provider: `NPU`, `GPU`, or `CPU` (required when using `openvino`, no default)
 * `winmlOpenVINOEnableNPUFastCompile` — set `true` for faster NPU compilation (optional)
 * `winmlDeviceToUse` — GPU device index for DML/NvTensorRtRtx/MIGraphX
+* `winmlMigraphxBatchSize` — fixed batch size MIGraphX compiles for, to avoid recompiling every time the actual batch fill level changes at runtime (default 8, clamped to `nnMaxBatchSize`)
+
+`vitisai` (AMD NPU) and `migraphx` (AMD GPU) both persistently cache their first-time hardware
+compile to disk under `<dir containing katago.exe>/KataGoData/EPCache/` so this cost (which can be
+on the order of 15 minutes for a NPU compile) is only paid once per model, not on every process
+launch; see [Compiling.md](Compiling.md#minimal-katago-build-commands-windows-winml-backend) for
+details. This cache location is hardcoded, not a config option.
+
+`vitisai` additionally **requires a pre-quantized model** (a file whose name ends in `-int8.onnx`)
+-- a `.bin.gz` or plain `.onnx` is rejected outright, since the VitisAI EP only accelerates INT8
+ops and would otherwise silently run mostly-or-entirely on CPU. See
+[Compiling.md](Compiling.md#vitisai-npu-requires-a-pre-quantized-model) for the full offline
+quantization workflow (`exportonnx` + `dumpcalibrationdata` + a Python/`amd-quark` step), including
+a known issue where this EP build has been observed to reject quantized graphs outright even when
+correctly produced.
 
 #### Human-style Play and Analysis
 
