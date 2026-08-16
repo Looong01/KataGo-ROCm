@@ -6,6 +6,13 @@
 #ifndef NEURALNET_CUDAANDROCMHELPERS_H_
 #define NEURALNET_CUDAANDROCMHELPERS_H_
 
+// Current stream used for all kernel launches in cudaandrocmhelpers.inc. Defaults to 0 (the
+// default stream), which is what the CUDA backend always uses. The ROCm backend sets it per
+// compute handle to give each handle its own stream and to enable hipGraph capture of the
+// forward pass. KATAGO_STREAM_T is defined by the including wrapper (rocmhelpers.h/cudahelpers.h).
+void customCudaSetLaunchStream(KATAGO_STREAM_T s);
+KATAGO_STREAM_T customCudaGetLaunchStream();
+
 //Given two tensors with shapes inA: [n,cA,h,w] and inB: [n,cB,h,w], that are on the GPU
 //Copy them into a single tensor out: [n,cA+cB,h,w] that is also allocated on the gpu
 void customCudaChannelConcat(const float* inA, const float* inB, float* out, int chwA, int chwB, int n);

@@ -454,6 +454,14 @@ struct CudaHandles {
   // Controls whether 1x1 NHWC convs run as a hipBLAS GEMM (vs MIOpen). Auto = matmul iff FP16.
   // True/False force the choice regardless of precision.
   enabled_t use1x1MatmulMode;
+  // Per-handle non-blocking stream that all of this handle's forward work runs on. Besides
+  // decoupling concurrent server threads from the shared default stream, it is what makes
+  // hipGraph capture of the forward possible (capture cannot run on the legacy default stream,
+  // and a shared stream would capture other threads' work).
+  hipStream_t stream;
+  // Fixed hipBLAS workspace, attached so hipBLAS never needs an internal hipMalloc - which would
+  // be illegal during graph capture.
+  OwnedDeviceBuf blasWorkspaceBuf;
 
   CudaHandles(int major, int minor, Logger* logger_, bool ckFmhaArchSupported_, bool disableFusedAttention_)
     : majorComputeCapability(major),
@@ -464,6 +472,17 @@ struct CudaHandles {
       fusedAttentionRuntimeDisabled(false),
       use1x1MatmulMode(enabled_t::Auto)
   {
+    CUDA_ERR("CudaHandles", hipStreamCreateWithFlags(&stream, hipStreamNonBlocking));
+    CUBLAS_ERR("CudaHandles", hipblasSetStream(cublas, stream));
+    CUDNN_ERR("CudaHandles", miopenSetStream(cudnn, stream));
+    // 32 MiB is far above anything these GEMM shapes ask for (they're all small); the buffer just
+    // needs to exist so no internal allocation happens mid-capture.
+    CUDA_ERR("CudaHandles", hipMalloc(&blasWorkspaceBuf.buf, 32 * 1024 * 1024));
+    CUBLAS_ERR("CudaHandles", hipblasSetWorkspace(cublas, blasWorkspaceBuf.buf, 32 * 1024 * 1024));
+  }
+
+  ~CudaHandles() {
+    (void)hipStreamDestroy(stream);
   }
 
   static CudaHandles* cudaHandlesTesting() {
@@ -1390,7 +1409,7 @@ struct ConvLayer {
     std::unique_ptr<SizedBuf<void*>> accumBuf;
     if(accumulate) {
       accumBuf = std::make_unique<SizedBuf<void*>>(scratch->allocator, scratch->getBufSizeXY(outChannels));
-      CUDA_ERR(name.c_str(), hipMemcpyAsync(accumBuf->buf, outputBuf, outputElts * elemSize, hipMemcpyDeviceToDevice));
+      CUDA_ERR(name.c_str(), hipMemcpyAsync(accumBuf->buf, outputBuf, outputElts * elemSize, hipMemcpyDeviceToDevice, cudaHandles->stream));
     }
 
     if(useNchwFallback) {
@@ -2603,7 +2622,7 @@ struct TransformerAttentionBlock {
       float ckResult = -1.0f;
       string ckFailure;
       try {
-        ckResult = fmha_fwd(traits, args, ck_tile::stream_config{});
+        ckResult = fmha_fwd(traits, args, ck_tile::stream_config{cudaHandles->stream});
       }
       catch(const std::exception& e) {
         ckFailure = e.what();
@@ -4093,6 +4112,10 @@ struct ComputeContext {
   bool disableFusedAttention;
   // Whether 1x1 NHWC convs use the hipBLAS GEMM path. Auto = matmul iff FP16.
   enabled_t use1x1MatmulMode;
+  // Whether the forward pass is captured into per-batch-size hipGraphs and replayed, eliminating
+  // per-dispatch host overhead. Auto = on, with automatic permanent eager fallback on any capture
+  // failure.
+  enabled_t useGraphsMode;
 };
 #endif
 
@@ -4154,6 +4177,14 @@ ComputeContext* NeuralNet::createComputeContext(
   // slow CK grouped-conv kernels), while hipBLAS GEMM is fast.
   enabled_t use1x1MatmulMode =
     cfg.contains("rocmUse1x1Matmul") ? cfg.getEnabled("rocmUse1x1Matmul") : enabled_t::Auto;
+  // Whether to capture the forward pass into per-batch-size hipGraphs and replay them, removing
+  // per-dispatch host overhead. On by explicit request only (rocmUseGraphs=true): measured neutral
+  // to slightly negative on gfx1100/RDNA3 (graph launch of a ~100-node graph costs about as much
+  // host time as the dispatches it replaces), while it may win on dispatch-bound setups (many
+  // threads, datacenter GPUs). Any capture/instantiate failure flips the affected handle to eager
+  // mode permanently (with a log line), so a broken graph path can never produce wrong results.
+  enabled_t useGraphsMode =
+    cfg.contains("rocmUseGraphs") ? cfg.getEnabled("rocmUseGraphs") : enabled_t::Auto;
 
   ComputeContext* context = new ComputeContext();
   context->nnXLen = nnXLen;
@@ -4162,6 +4193,7 @@ ComputeContext* NeuralNet::createComputeContext(
   context->useNHWCMode = useNHWCMode;
   context->disableFusedAttention = disableFusedAttention;
   context->use1x1MatmulMode = use1x1MatmulMode;
+  context->useGraphsMode = useGraphsMode;
   return context;
 }
 #endif
@@ -4183,6 +4215,13 @@ struct ComputeHandle {
   const bool requireExactNNLen;
   const bool inputsUseNHWC;
   const bool usingNHWC;
+#ifdef KATAGO_GPU_HIP
+  // hipGraph capture state for the forward pass (see rocmUseGraphs in createComputeContext).
+  bool useGraphs;            // resolved at construction from the context's mode
+  bool graphsDisabled;       // set permanently on any capture/instantiate/launch failure
+  bool capturePrimed;        // true once an eager forward has filled every scratch pool bucket
+  std::map<int, hipGraphExec_t> graphExecByBatchSize;
+#endif
 
 #ifdef KATAGO_GPU_CUDA
   ComputeHandle(
@@ -4241,6 +4280,9 @@ struct ComputeHandle {
       majorComputeCapability,minorComputeCapability,logger,ckFmhaArchSupported,context->disableFusedAttention);
     // Must be set before building the model: ConvLayer reads it at construction to pick the 1x1 conv path.
     cudaHandles->use1x1MatmulMode = context->use1x1MatmulMode;
+    useGraphs = (context->useGraphsMode == enabled_t::True);
+    graphsDisabled = false;
+    capturePrimed = false;
     model = std::make_unique<Model>(
       cudaHandles.get(), &(loadedModel->modelDesc), maxBatchSize,
       nnXLen, nnYLen, inputsUseNHWC, useFP16, useNHWC
@@ -4253,6 +4295,10 @@ struct ComputeHandle {
   }
 #endif
   ~ComputeHandle() {
+#ifdef KATAGO_GPU_HIP
+    for(auto& kv : graphExecByBatchSize)
+      (void)hipGraphExecDestroy(kv.second);
+#endif
   }
 
   ComputeHandle() = delete;
@@ -4646,6 +4692,14 @@ void NeuralNet::getOutput(
 
   Buffers* buffers = gpuHandle->buffers.get();
   ScratchBuffers* scratch = gpuHandle->scratch.get();
+#ifdef KATAGO_GPU_HIP
+  // All of this handle's device work runs on its own non-blocking stream (see CudaHandles) - this
+  // decouples concurrent server threads from the shared default stream and is what makes hipGraph
+  // capture of the forward possible.
+  CudaHandles* cudaHandles = gpuHandle->cudaHandles.get();
+  hipStream_t stream = cudaHandles->stream;
+  customCudaSetLaunchStream(stream);
+#endif
 
   if(!gpuHandle->usingFP16) {
     assert(inputBuffers->userInputBufferBytes == buffers->inputBufBytes);
@@ -4666,11 +4720,19 @@ void NeuralNet::getOutput(
     assert(inputBuffers->singleOwnershipResultElts == nnXLen*nnYLen);
     assert(inputBuffers->singleOwnershipResultBytes == nnXLen*nnYLen * sizeof(float));
 
+#ifdef KATAGO_GPU_HIP
+    CUDA_ERR("getOutput",hipMemcpyAsync(buffers->inputBuf, inputBuffers->userInputBuffer, inputBuffers->singleInputBytes*batchSize, hipMemcpyHostToDevice, stream));
+    CUDA_ERR("getOutput",hipMemcpyAsync(buffers->inputGlobalBuf, inputBuffers->userInputGlobalBuffer, inputBuffers->singleInputGlobalBytes*batchSize, hipMemcpyHostToDevice, stream));
+    if(numMetaFeatures > 0) {
+      CUDA_ERR("getOutput",hipMemcpyAsync(buffers->inputMetaBuf, inputBuffers->userInputMetaBuffer, inputBuffers->singleInputMetaBytes*batchSize, hipMemcpyHostToDevice, stream));
+    }
+#else
     CUDA_ERR("getOutput",cudaMemcpy(buffers->inputBuf, inputBuffers->userInputBuffer, inputBuffers->singleInputBytes*batchSize, cudaMemcpyHostToDevice));
     CUDA_ERR("getOutput",cudaMemcpy(buffers->inputGlobalBuf, inputBuffers->userInputGlobalBuffer, inputBuffers->singleInputGlobalBytes*batchSize, cudaMemcpyHostToDevice));
     if(numMetaFeatures > 0) {
       CUDA_ERR("getOutput",cudaMemcpy(buffers->inputMetaBuf, inputBuffers->userInputMetaBuffer, inputBuffers->singleInputMetaBytes*batchSize, cudaMemcpyHostToDevice));
     }
+#endif
   }
   else {
     assert(inputBuffers->userInputBufferBytes == buffers->inputBufBytesFloat);
@@ -4693,48 +4755,139 @@ void NeuralNet::getOutput(
     assert(inputBuffers->singleOwnershipResultElts == nnXLen*nnYLen);
     assert(inputBuffers->singleOwnershipResultBytes == nnXLen*nnYLen * sizeof(float));
 
+#ifdef KATAGO_GPU_HIP
+    CUDA_ERR("getOutput",hipMemcpyAsync(buffers->inputBufFloat, inputBuffers->userInputBuffer, inputBuffers->singleInputBytes*batchSize, hipMemcpyHostToDevice, stream));
+    CUDA_ERR("getOutput",hipMemcpyAsync(buffers->inputGlobalBufFloat, inputBuffers->userInputGlobalBuffer, inputBuffers->singleInputGlobalBytes*batchSize, hipMemcpyHostToDevice, stream));
+    if(numMetaFeatures > 0) {
+      CUDA_ERR("getOutput",hipMemcpyAsync(buffers->inputMetaBufFloat, inputBuffers->userInputMetaBuffer, inputBuffers->singleInputMetaBytes*batchSize, hipMemcpyHostToDevice, stream));
+    }
+#else
     CUDA_ERR("getOutput",cudaMemcpy(buffers->inputBufFloat, inputBuffers->userInputBuffer, inputBuffers->singleInputBytes*batchSize, cudaMemcpyHostToDevice));
     CUDA_ERR("getOutput",cudaMemcpy(buffers->inputGlobalBufFloat, inputBuffers->userInputGlobalBuffer, inputBuffers->singleInputGlobalBytes*batchSize, cudaMemcpyHostToDevice));
     if(numMetaFeatures > 0) {
       CUDA_ERR("getOutput",cudaMemcpy(buffers->inputMetaBufFloat, inputBuffers->userInputMetaBuffer, inputBuffers->singleInputMetaBytes*batchSize, cudaMemcpyHostToDevice));
     }
-
-    customCudaCopyToHalf((const float*)buffers->inputBufFloat,(half*)buffers->inputBuf,inputBuffers->singleInputElts*batchSize);
-    CUDA_ERR("getOutput",cudaPeekAtLastError());
-    customCudaCopyToHalf((const float*)buffers->inputGlobalBufFloat,(half*)buffers->inputGlobalBuf,inputBuffers->singleInputGlobalElts*batchSize);
-    CUDA_ERR("getOutput",cudaPeekAtLastError());
-    if(numMetaFeatures > 0) {
-      customCudaCopyToHalf((const float*)buffers->inputMetaBufFloat,(half*)buffers->inputMetaBuf,inputBuffers->singleInputMetaElts*batchSize);
-      CUDA_ERR("getOutput",cudaPeekAtLastError());
-    }
+#endif
   }
 
-  gpuHandle->model->apply(
-    gpuHandle->cudaHandles.get(),
-    scratch,
-    batchSize,
-    gpuHandle->requireExactNNLen,
+  // The capturable forward: on FP16 the half-conversions (fixed float staging buffers -> fixed
+  // half buffers) plus the whole model apply.
+  auto forwardRun = [&]() {
+    if(gpuHandle->usingFP16) {
+      customCudaCopyToHalf((const float*)buffers->inputBufFloat,(half*)buffers->inputBuf,inputBuffers->singleInputElts*batchSize);
+      CUDA_ERR("getOutput",cudaPeekAtLastError());
+      customCudaCopyToHalf((const float*)buffers->inputGlobalBufFloat,(half*)buffers->inputGlobalBuf,inputBuffers->singleInputGlobalElts*batchSize);
+      CUDA_ERR("getOutput",cudaPeekAtLastError());
+      if(numMetaFeatures > 0) {
+        customCudaCopyToHalf((const float*)buffers->inputMetaBufFloat,(half*)buffers->inputMetaBuf,inputBuffers->singleInputMetaElts*batchSize);
+        CUDA_ERR("getOutput",cudaPeekAtLastError());
+      }
+    }
 
-    buffers->inputBuf,
-    buffers->inputGlobalBuf,
-    buffers->inputMetaBuf,
+    gpuHandle->model->apply(
+      gpuHandle->cudaHandles.get(),
+      scratch,
+      batchSize,
+      gpuHandle->requireExactNNLen,
 
-    buffers->policyPassBuf,
-    buffers->policyBuf,
+      buffers->inputBuf,
+      buffers->inputGlobalBuf,
+      buffers->inputMetaBuf,
 
-    buffers->valueBuf,
-    buffers->scoreValueBuf,
-    buffers->ownershipBuf,
+      buffers->policyPassBuf,
+      buffers->policyBuf,
 
-    buffers->workspaceBuf,
-    buffers->workspaceBytes
-  );
+      buffers->valueBuf,
+      buffers->scoreValueBuf,
+      buffers->ownershipBuf,
 
+      buffers->workspaceBuf,
+      buffers->workspaceBytes
+    );
+  };
+
+#ifdef KATAGO_GPU_HIP
+  bool forwardDone = false;
+  if(gpuHandle->useGraphs && !gpuHandle->graphsDisabled) {
+    auto graphIter = gpuHandle->graphExecByBatchSize.find(batchSize);
+    if(graphIter != gpuHandle->graphExecByBatchSize.end()) {
+      CUDA_ERR("getOutput",hipGraphLaunch(graphIter->second, stream));
+      forwardDone = true;
+    }
+    else {
+      // First forward ever on this handle: run it eagerly once before any capture. Plain
+      // hipMalloc during stream capture is illegal, and all forward transients are
+      // maxBatch-normalized (getBufSizeXY et al. size by maxBatchSize), so a single eager forward
+      // fills every scratch pool bucket for every batch size; later captures then only hit the
+      // pool and get the same stable addresses. This eager run also computes this call's results.
+      if(!gpuHandle->capturePrimed) {
+        forwardRun();
+        gpuHandle->capturePrimed = true;
+      }
+      // Capture the identical sequence, instantiate it, and launch it (capture itself executes
+      // nothing, so the launch is what computes this call).
+      hipGraph_t graph = nullptr;
+      hipGraphExec_t graphExec = nullptr;
+      hipError_t graphErr = hipStreamBeginCapture(stream, hipStreamCaptureModeThreadLocal);
+      if(graphErr == hipSuccess) {
+        try {
+          forwardRun();
+          graphErr = hipStreamEndCapture(stream, &graph);
+        }
+        catch(...) {
+          // Something in the forward threw mid-capture (e.g. a pool-miss hipMalloc). End the
+          // capture to restore the stream, then fall through to the eager fallback below.
+          (void)hipStreamEndCapture(stream, &graph);
+          graphErr = hipErrorUnknown;
+        }
+      }
+      if(graphErr == hipSuccess) {
+        graphErr = hipGraphInstantiate(&graphExec, graph, NULL, NULL, 0);
+        if(graphErr == hipSuccess)
+          graphErr = hipGraphLaunch(graphExec, stream);
+      }
+      if(graph != nullptr)
+        (void)hipGraphDestroy(graph);
+      if(graphErr == hipSuccess) {
+        gpuHandle->graphExecByBatchSize[batchSize] = graphExec;
+        forwardDone = true;
+        if(cudaHandles->logger != NULL && gpuHandle->graphExecByBatchSize.size() == 1)
+          cudaHandles->logger->write("ROCm backend: hipGraph forward capture is active for this handle");
+      }
+      else {
+        if(graphExec != nullptr)
+          (void)hipGraphExecDestroy(graphExec);
+        // Give up on graphs for this handle - a broken graph path can never produce wrong results.
+        gpuHandle->graphsDisabled = true;
+        if(cudaHandles->logger != NULL)
+          cudaHandles->logger->write(
+            "ROCm backend: hipGraph capture/instantiate failed (" + string(hipGetErrorString(graphErr)) +
+            "); using eager mode for this handle");
+        forwardRun();
+        forwardDone = true;
+      }
+    }
+  }
+  if(!forwardDone)
+    forwardRun();
+#else
+  forwardRun();
+#endif
+
+#ifdef KATAGO_GPU_HIP
+  CUDA_ERR("getOutput",hipMemcpyAsync(inputBuffers->policyPassResults, buffers->policyPassBuf, inputBuffers->singlePolicyPassResultBytes*batchSize, hipMemcpyDeviceToHost, stream));
+  CUDA_ERR("getOutput",hipMemcpyAsync(inputBuffers->policyResults, buffers->policyBuf, inputBuffers->singlePolicyResultBytes*batchSize, hipMemcpyDeviceToHost, stream));
+  CUDA_ERR("getOutput",hipMemcpyAsync(inputBuffers->valueResults, buffers->valueBuf, inputBuffers->singleValueResultBytes*batchSize, hipMemcpyDeviceToHost, stream));
+  CUDA_ERR("getOutput",hipMemcpyAsync(inputBuffers->scoreValueResults, buffers->scoreValueBuf, inputBuffers->singleScoreValueResultBytes*batchSize, hipMemcpyDeviceToHost, stream));
+  CUDA_ERR("getOutput",hipMemcpyAsync(inputBuffers->ownershipResults, buffers->ownershipBuf, inputBuffers->singleOwnershipResultBytes*batchSize, hipMemcpyDeviceToHost, stream));
+  CUDA_ERR("getOutput",hipStreamSynchronize(stream));
+#else
   CUDA_ERR("getOutput",cudaMemcpy(inputBuffers->policyPassResults, buffers->policyPassBuf, inputBuffers->singlePolicyPassResultBytes*batchSize, cudaMemcpyDeviceToHost));
   CUDA_ERR("getOutput",cudaMemcpy(inputBuffers->policyResults, buffers->policyBuf, inputBuffers->singlePolicyResultBytes*batchSize, cudaMemcpyDeviceToHost));
   CUDA_ERR("getOutput",cudaMemcpy(inputBuffers->valueResults, buffers->valueBuf, inputBuffers->singleValueResultBytes*batchSize, cudaMemcpyDeviceToHost));
   CUDA_ERR("getOutput",cudaMemcpy(inputBuffers->scoreValueResults, buffers->scoreValueBuf, inputBuffers->singleScoreValueResultBytes*batchSize, cudaMemcpyDeviceToHost));
   CUDA_ERR("getOutput",cudaMemcpy(inputBuffers->ownershipResults, buffers->ownershipBuf, inputBuffers->singleOwnershipResultBytes*batchSize, cudaMemcpyDeviceToHost));
+#endif
 
   assert(outputs.size() == batchSize);
 

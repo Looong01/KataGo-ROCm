@@ -29,8 +29,21 @@
 #endif
 #define KATAGO_HELPERS_INC_INCLUDED 1
 
+#ifndef KATAGO_STREAM_T
+#error "KATAGO_STREAM_T must be defined (to hipStream_t or cudaStream_t) by the wrapper header before including cudaandrocmhelpers.inc"
+#endif
+
 #include <stdexcept>
 #include <string>
+
+// Current stream for every kernel launch below. Defaults to 0 (the default stream), which keeps
+// the CUDA backend's behavior unchanged. The ROCm backend sets it per compute handle (each handle
+// owns a non-blocking stream) so a handle's forward pass can be captured into a hipGraph and so
+// concurrent server threads no longer serialize on the legacy default stream. Thread-local because
+// different server threads run their forwards on different handles' streams concurrently.
+static thread_local KATAGO_STREAM_T katagoLaunchStream = 0;
+void customCudaSetLaunchStream(KATAGO_STREAM_T s) { katagoLaunchStream = s; }
+KATAGO_STREAM_T customCudaGetLaunchStream() { return katagoLaunchStream; }
 
 
 //TODO maybe tune this number, it varies by GPU
@@ -151,7 +164,7 @@ void customCudaChannelConcatTemplate(const T* inA, const T* inB, T* out, int chw
   int numBlocksA = (chwA + blockSize-1) / blockSize;
   int numBlocksB = (chwB + blockSize-1) / blockSize;
   int numBlocks = numBlocksA + numBlocksB;
-  channelConcatKernel<<<numBlocks, blockSize>>>(inA,inB,out,chwA,chwB,numBlocksA,numBlocksB,n);
+  channelConcatKernel<<<numBlocks, blockSize, 0, katagoLaunchStream>>>(inA,inB,out,chwA,chwB,numBlocksA,numBlocksB,n);
 }
 template void customCudaChannelConcatTemplate<float>(const float* inA, const float* inB, float* out, int chwA, int chwB, int n);
 template void customCudaChannelConcatTemplate<half>(const half* inA, const half* inB, half* out, int chwA, int chwB, int n);
@@ -179,7 +192,7 @@ void customCudaChannel0ExtractNHWCTemplate(const T *in, T* out, int n, int hw, i
   int nhw = n*hw;
   int blockSize = targetNumThreads;
   int numBlocks = (nhw+blockSize-1)/blockSize;
-  extractChannel0KernelNHWC<<<numBlocks,blockSize>>>(in,out,nhw,c);
+  extractChannel0KernelNHWC<<<numBlocks,blockSize, 0, katagoLaunchStream>>>(in,out,nhw,c);
 }
 
 template <typename T>
@@ -205,7 +218,7 @@ void customCudaChannel0ExtractNCHWTemplate(const T *in, T* out, int nSize, int c
 
   dim3 grid(hwBlocks,nBlocks,1);
   dim3 threads(hwThreads,nThreads,1);
-  extractChannel0KernelNCHW<<<grid,threads>>>(in,out,nSize,cSize,hwSize);
+  extractChannel0KernelNCHW<<<grid,threads, 0, katagoLaunchStream>>>(in,out,nSize,cSize,hwSize);
 }
 
 void customCudaChannel0ExtractNCHW(const float* in, float* out, int n, int c, int hw) {
@@ -426,7 +439,7 @@ void customCudaPoolRowsSumNCHW(const float* in, float* out, int nSize, int cSize
 
   dim3 grid(1,cBlocks,nSize);
   dim3 threads(xyThreads,cThreads,1);
-  sumChannelsNCHWKernel<<<grid,threads,sharedMemSize>>>(in,out,cSize,xySize,scaleSum);
+  sumChannelsNCHWKernel<<<grid,threads,sharedMemSize, katagoLaunchStream>>>(in,out,cSize,xySize,scaleSum);
 }
 void customCudaValueHeadPoolNCHW(const float* in, float* out, int nSize, int cSize, int xySize, const float* maskSum) {
   if(nSize > 65535)
@@ -449,7 +462,7 @@ void customCudaValueHeadPoolNCHW(const float* in, float* out, int nSize, int cSi
 
   dim3 grid(1,cBlocks,nSize);
   dim3 threads(xyThreads,cThreads,1);
-  valueHeadPoolChannelsNCHWKernel<<<grid,threads,sharedMemSize>>>(in,out,nSize,cSize,xySize,maskSum);
+  valueHeadPoolChannelsNCHWKernel<<<grid,threads,sharedMemSize, katagoLaunchStream>>>(in,out,nSize,cSize,xySize,maskSum);
 }
 void customCudaPoolRowsGPoolNCHW(const float* in, float* out, int nSize, int cSize, int xySize, const float* mask, const float* maskSum) {
   if(nSize > 65535)
@@ -477,9 +490,9 @@ void customCudaPoolRowsGPoolNCHW(const float* in, float* out, int nSize, int cSi
   dim3 grid(1,cBlocks,nSize);
   dim3 threads(xyThreads,cThreads,1);
   if(mask != NULL)
-    gPoolChannelsNCHWMaskKernel<<<grid,threads,sharedMemSize>>>(in,out,cSize,xySize,mask,maskSum,sharedMemElts);
+    gPoolChannelsNCHWMaskKernel<<<grid,threads,sharedMemSize, katagoLaunchStream>>>(in,out,cSize,xySize,mask,maskSum,sharedMemElts);
   else
-    gPoolChannelsNCHWKernel<<<grid,threads,sharedMemSize>>>(in,out,cSize,xySize,maskSum,sharedMemElts);
+    gPoolChannelsNCHWKernel<<<grid,threads,sharedMemSize, katagoLaunchStream>>>(in,out,cSize,xySize,maskSum,sharedMemElts);
 }
 
 //--------------------------------------------------------------------------------------------------------------
@@ -622,9 +635,9 @@ void customCudaPoolRowsGPoolNCHW(const half* in, half* out, int nSize, int cSize
   dim3 grid(1,cBlocks,nSize);
   dim3 threads(xyThreads,cThreads,1);
   if(mask != NULL)
-    gPoolChannelsNCHWHalfMaskKernel<<<grid,threads,sharedMemSize>>>(in,out,cSize,xySize,mask,maskSum,sharedMemElts);
+    gPoolChannelsNCHWHalfMaskKernel<<<grid,threads,sharedMemSize, katagoLaunchStream>>>(in,out,cSize,xySize,mask,maskSum,sharedMemElts);
   else
-    gPoolChannelsNCHWHalfKernel<<<grid,threads,sharedMemSize>>>(in,out,cSize,xySize,maskSum,sharedMemElts);
+    gPoolChannelsNCHWHalfKernel<<<grid,threads,sharedMemSize, katagoLaunchStream>>>(in,out,cSize,xySize,maskSum,sharedMemElts);
 }
 
 
@@ -831,7 +844,7 @@ void customCudaPoolRowsSumNHWC(const float* in, float* out, int nSize, int xySiz
 
   dim3 grid(cBlocks,1,nSize);
   dim3 threads(cThreads,xyThreads,1);
-  sumChannelsNHWCKernel<<<grid,threads,sharedMemSize>>>(in,out,xySize,cSize,scaleSum);
+  sumChannelsNHWCKernel<<<grid,threads,sharedMemSize, katagoLaunchStream>>>(in,out,xySize,cSize,scaleSum);
 }
 
 void customCudaValueHeadPoolNHWC(const float* in, float* out, int nSize, int xySize, int cSize, const float* maskSum) {
@@ -856,7 +869,7 @@ void customCudaValueHeadPoolNHWC(const float* in, float* out, int nSize, int xyS
 
   dim3 grid(cBlocks,1,nSize);
   dim3 threads(cThreads,xyThreads,1);
-  valueHeadPoolChannelsNHWCKernel<<<grid,threads,sharedMemSize>>>(in,out,nSize,xySize,cSize,maskSum);
+  valueHeadPoolChannelsNHWCKernel<<<grid,threads,sharedMemSize, katagoLaunchStream>>>(in,out,nSize,xySize,cSize,maskSum);
 }
 
 void customCudaPoolRowsGPoolNHWC(const float* in, float* out, int nSize, int xySize, int cSize, const float* mask, const float* maskSum) {
@@ -886,9 +899,9 @@ void customCudaPoolRowsGPoolNHWC(const float* in, float* out, int nSize, int xyS
   dim3 grid(cBlocks,1,nSize);
   dim3 threads(cThreads,xyThreads,1);
   if(mask != NULL)
-    gPoolChannelsNHWCMaskKernel<<<grid,threads,sharedMemSize>>>(in,out,xySize,cSize,mask,maskSum,sharedMemElts);
+    gPoolChannelsNHWCMaskKernel<<<grid,threads,sharedMemSize, katagoLaunchStream>>>(in,out,xySize,cSize,mask,maskSum,sharedMemElts);
   else
-    gPoolChannelsNHWCKernel<<<grid,threads,sharedMemSize>>>(in,out,xySize,cSize,maskSum,sharedMemElts);
+    gPoolChannelsNHWCKernel<<<grid,threads,sharedMemSize, katagoLaunchStream>>>(in,out,xySize,cSize,maskSum,sharedMemElts);
 }
 
 //--------------------------------------------------------------------------------------------------------------
@@ -1030,9 +1043,9 @@ void customCudaPoolRowsGPoolNHWC(const half* in, half* out, int nSize, int xySiz
   dim3 grid(cBlocks,1,nSize);
   dim3 threads(cThreads,xyThreads,1);
   if(mask != NULL)
-    gPoolChannelsNHWCHalfMaskKernel<<<grid,threads,sharedMemSize>>>(in,out,xySize,cSize,mask,maskSum,sharedMemElts);
+    gPoolChannelsNHWCHalfMaskKernel<<<grid,threads,sharedMemSize, katagoLaunchStream>>>(in,out,xySize,cSize,mask,maskSum,sharedMemElts);
   else
-    gPoolChannelsNHWCHalfKernel<<<grid,threads,sharedMemSize>>>(in,out,xySize,cSize,maskSum,sharedMemElts);
+    gPoolChannelsNHWCHalfKernel<<<grid,threads,sharedMemSize, katagoLaunchStream>>>(in,out,xySize,cSize,maskSum,sharedMemElts);
 }
 
 
@@ -1058,12 +1071,12 @@ void copyFromHalfKernel(const half *in, float* out, int n)
 void customCudaCopyToHalf(const float* in, half* out, int n) {
   int blockSize = targetNumThreads;
   int numBlocks = (n+blockSize-1)/blockSize;
-  copyToHalfKernel<<<numBlocks, blockSize>>>(in,out,n);
+  copyToHalfKernel<<<numBlocks, blockSize, 0, katagoLaunchStream>>>(in,out,n);
 }
 void customCudaCopyFromHalf(const half* in, float* out, int n) {
   int blockSize = targetNumThreads;
   int numBlocks = (n+blockSize-1)/blockSize;
-  copyFromHalfKernel<<<numBlocks, blockSize>>>(in,out,n);
+  copyFromHalfKernel<<<numBlocks, blockSize, 0, katagoLaunchStream>>>(in,out,n);
 }
 
 //--------------------------------------------------------------------------------------------------------------
@@ -1084,7 +1097,7 @@ void addTensorInplaceHalfKernel(half *buf, const half* biases, int nSize)
 void customCudaAddTensorInplace(half* buf, const half* biases, int nSize) {
   int blockSize = targetNumThreads;
   int numBlocks = (nSize+blockSize-1)/blockSize;
-  addTensorInplaceHalfKernel<<<numBlocks, blockSize>>>(buf,biases,nSize);
+  addTensorInplaceHalfKernel<<<numBlocks, blockSize, 0, katagoLaunchStream>>>(buf,biases,nSize);
 }
 
 __global__
@@ -1098,7 +1111,7 @@ void addTensorInplaceKernel(float *buf, const float* biases, int nSize)
 void customCudaAddTensorInplace(float* buf, const float* biases, int nSize) {
   int blockSize = targetNumThreads;
   int numBlocks = (nSize+blockSize-1)/blockSize;
-  addTensorInplaceKernel<<<numBlocks, blockSize>>>(buf,biases,nSize);
+  addTensorInplaceKernel<<<numBlocks, blockSize, 0, katagoLaunchStream>>>(buf,biases,nSize);
 }
 
 #ifdef KATAGO_GPU_HIP
@@ -1133,7 +1146,7 @@ static void applyBatchedTranspose2D(const T* in, T* out, int nSize, int aSize, i
     throw std::runtime_error(std::string(name) + ": dimension exceeds the grid y/z size limit");
   int blockSize = targetNumThreads;
   dim3 grid((bSize + blockSize - 1) / blockSize, aSize, nSize);
-  batchedTranspose2DKernel<<<grid, blockSize>>>(in, out, aSize, bSize);
+  batchedTranspose2DKernel<<<grid, blockSize, 0, katagoLaunchStream>>>(in, out, aSize, bSize);
 }
 
 void customCudaCopyNCHWtoNHWC(const float* in, float* out, int nSize, int cSize, int xySize) {
@@ -1316,33 +1329,33 @@ static void sharedAddCBiasInplaceNC(void* buf, const void* biases, int nSize, in
 
   if(activation == ACTIVATION_IDENTITY) {
     if(isHalf)
-      addCBiasInplaceNCHalfKernel<<<grid,threads>>>((half*)buf,(const half*)biases,nSize,cSize);
+      addCBiasInplaceNCHalfKernel<<<grid,threads, 0, katagoLaunchStream>>>((half*)buf,(const half*)biases,nSize,cSize);
     else
-      addCBiasInplaceNCKernel<<<grid,threads>>>((float*)buf,(const float*)biases,nSize,cSize);
+      addCBiasInplaceNCKernel<<<grid,threads, 0, katagoLaunchStream>>>((float*)buf,(const float*)biases,nSize,cSize);
   }
   else if(activation == ACTIVATION_RELU) {
     if(isHalf)
-      addCBiasInplaceNCHalfKernelRelu<<<grid,threads>>>((half*)buf,(const half*)biases,nSize,cSize);
+      addCBiasInplaceNCHalfKernelRelu<<<grid,threads, 0, katagoLaunchStream>>>((half*)buf,(const half*)biases,nSize,cSize);
     else
-      addCBiasInplaceNCKernelRelu<<<grid,threads>>>((float*)buf,(const float*)biases,nSize,cSize);
+      addCBiasInplaceNCKernelRelu<<<grid,threads, 0, katagoLaunchStream>>>((float*)buf,(const float*)biases,nSize,cSize);
   }
   else if(activation == ACTIVATION_MISH) {
     if(isHalf)
-      addCBiasInplaceNCHalfKernelMish<<<grid,threads>>>((half*)buf,(const half*)biases,nSize,cSize);
+      addCBiasInplaceNCHalfKernelMish<<<grid,threads, 0, katagoLaunchStream>>>((half*)buf,(const half*)biases,nSize,cSize);
     else
-      addCBiasInplaceNCKernelMish<<<grid,threads>>>((float*)buf,(const float*)biases,nSize,cSize);
+      addCBiasInplaceNCKernelMish<<<grid,threads, 0, katagoLaunchStream>>>((float*)buf,(const float*)biases,nSize,cSize);
   }
   else if(activation == ACTIVATION_SILU) {
     if(isHalf)
-      addCBiasInplaceNCHalfKernelSilu<<<grid,threads>>>((half*)buf,(const half*)biases,nSize,cSize);
+      addCBiasInplaceNCHalfKernelSilu<<<grid,threads, 0, katagoLaunchStream>>>((half*)buf,(const half*)biases,nSize,cSize);
     else
-      addCBiasInplaceNCKernelSilu<<<grid,threads>>>((float*)buf,(const float*)biases,nSize,cSize);
+      addCBiasInplaceNCKernelSilu<<<grid,threads, 0, katagoLaunchStream>>>((float*)buf,(const float*)biases,nSize,cSize);
   }
   else if(activation == ACTIVATION_MISH_SCALE8) {
     if(isHalf)
-      addCBiasInplaceNCHalfKernelMishScale8<<<grid,threads>>>((half*)buf,(const half*)biases,nSize,cSize);
+      addCBiasInplaceNCHalfKernelMishScale8<<<grid,threads, 0, katagoLaunchStream>>>((half*)buf,(const half*)biases,nSize,cSize);
     else
-      addCBiasInplaceNCKernelMishScale8<<<grid,threads>>>((float*)buf,(const float*)biases,nSize,cSize);
+      addCBiasInplaceNCKernelMishScale8<<<grid,threads, 0, katagoLaunchStream>>>((float*)buf,(const float*)biases,nSize,cSize);
   }
   else {
     throw std::runtime_error("customCudaAddCBiasInplaceNC: unsupported activation");
@@ -1404,9 +1417,9 @@ static void sharedAddNCBiasInplaceNCHW(void *buf, const void* biases, int nSize,
   dim3 grid(sBlocks,cBlocks,nSize);
   dim3 threads(sThreads,cThreads,1);
   if(isHalf)
-    addNCBiasInplaceNCHWHalfKernel<<<grid,threads>>>((half*)buf,(const half*)biases,cSize,sSize);
+    addNCBiasInplaceNCHWHalfKernel<<<grid,threads, 0, katagoLaunchStream>>>((half*)buf,(const half*)biases,cSize,sSize);
   else
-    addNCBiasInplaceNCHWKernel<<<grid,threads>>>((float*)buf,(const float*)biases,cSize,sSize);
+    addNCBiasInplaceNCHWKernel<<<grid,threads, 0, katagoLaunchStream>>>((float*)buf,(const float*)biases,cSize,sSize);
 }
 
 void customCudaAddNCBiasInplaceNCHW(float *buf, const float* biases, int nSize, int cSize, int xySize) {
@@ -1464,9 +1477,9 @@ static void sharedAddNCBiasInplaceNHWC(void *buf, const void* biases, int nSize,
   dim3 grid(cBlocks,sBlocks,nSize);
   dim3 threads(cThreads,sThreads,1);
   if(isHalf)
-    addNCBiasInplaceNHWCHalfKernel<<<grid,threads>>>((half*)buf,(const half*)biases,sSize,cSize);
+    addNCBiasInplaceNHWCHalfKernel<<<grid,threads, 0, katagoLaunchStream>>>((half*)buf,(const half*)biases,sSize,cSize);
   else
-    addNCBiasInplaceNHWCKernel<<<grid,threads>>>((float*)buf,(const float*)biases,sSize,cSize);
+    addNCBiasInplaceNHWCKernel<<<grid,threads, 0, katagoLaunchStream>>>((float*)buf,(const float*)biases,sSize,cSize);
 }
 
 void customCudaAddNCBiasInplaceNHWC(float *buf, const float* biases, int nSize, int xySize, int cSize) {
@@ -1768,33 +1781,33 @@ static void sharedApplyCScaleBiasNCHW(const void* in, void* out, const void* sca
   if(mask == NULL) {
     if(activation == ACTIVATION_IDENTITY) {
       if(isHalf)
-        applyCScaleBiasNCHWHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,cSize,sSize);
+        applyCScaleBiasNCHWHalfKernel<<<grid,threads, 0, katagoLaunchStream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,cSize,sSize);
       else
-        applyCScaleBiasNCHWKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,cSize,sSize);
+        applyCScaleBiasNCHWKernel<<<grid,threads, 0, katagoLaunchStream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,cSize,sSize);
     }
     else if(activation == ACTIVATION_RELU) {
       if(isHalf)
-        applyCScaleBiasNCHWReluHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,cSize,sSize);
+        applyCScaleBiasNCHWReluHalfKernel<<<grid,threads, 0, katagoLaunchStream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,cSize,sSize);
       else
-        applyCScaleBiasNCHWReluKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,cSize,sSize);
+        applyCScaleBiasNCHWReluKernel<<<grid,threads, 0, katagoLaunchStream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,cSize,sSize);
     }
     else if(activation == ACTIVATION_MISH) {
       if(isHalf)
-        applyCScaleBiasNCHWMishHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,cSize,sSize);
+        applyCScaleBiasNCHWMishHalfKernel<<<grid,threads, 0, katagoLaunchStream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,cSize,sSize);
       else
-        applyCScaleBiasNCHWMishKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,cSize,sSize);
+        applyCScaleBiasNCHWMishKernel<<<grid,threads, 0, katagoLaunchStream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,cSize,sSize);
     }
     else if(activation == ACTIVATION_SILU) {
       if(isHalf)
-        applyCScaleBiasNCHWSiluHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,cSize,sSize);
+        applyCScaleBiasNCHWSiluHalfKernel<<<grid,threads, 0, katagoLaunchStream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,cSize,sSize);
       else
-        applyCScaleBiasNCHWSiluKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,cSize,sSize);
+        applyCScaleBiasNCHWSiluKernel<<<grid,threads, 0, katagoLaunchStream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,cSize,sSize);
     }
     else if(activation == ACTIVATION_MISH_SCALE8) {
       if(isHalf)
-        applyCScaleBiasNCHWMishScale8HalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,cSize,sSize);
+        applyCScaleBiasNCHWMishScale8HalfKernel<<<grid,threads, 0, katagoLaunchStream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,cSize,sSize);
       else
-        applyCScaleBiasNCHWMishScale8Kernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,cSize,sSize);
+        applyCScaleBiasNCHWMishScale8Kernel<<<grid,threads, 0, katagoLaunchStream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,cSize,sSize);
     }
     else {
       throw std::runtime_error("customCudaApplyCScaleBiasNCHW: unsupported activation");
@@ -1803,33 +1816,33 @@ static void sharedApplyCScaleBiasNCHW(const void* in, void* out, const void* sca
   else {
     if(activation == ACTIVATION_IDENTITY) {
       if(isHalf)
-        applyCScaleBiasNCHWMaskHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,cSize,sSize);
+        applyCScaleBiasNCHWMaskHalfKernel<<<grid,threads, 0, katagoLaunchStream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,cSize,sSize);
       else
-        applyCScaleBiasNCHWMaskKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,cSize,sSize);
+        applyCScaleBiasNCHWMaskKernel<<<grid,threads, 0, katagoLaunchStream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,cSize,sSize);
     }
     else if(activation == ACTIVATION_RELU) {
       if(isHalf)
-        applyCScaleBiasNCHWReluMaskHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,cSize,sSize);
+        applyCScaleBiasNCHWReluMaskHalfKernel<<<grid,threads, 0, katagoLaunchStream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,cSize,sSize);
       else
-        applyCScaleBiasNCHWReluMaskKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,cSize,sSize);
+        applyCScaleBiasNCHWReluMaskKernel<<<grid,threads, 0, katagoLaunchStream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,cSize,sSize);
     }
     else if(activation == ACTIVATION_MISH) {
       if(isHalf)
-        applyCScaleBiasNCHWMishMaskHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,cSize,sSize);
+        applyCScaleBiasNCHWMishMaskHalfKernel<<<grid,threads, 0, katagoLaunchStream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,cSize,sSize);
       else
-        applyCScaleBiasNCHWMishMaskKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,cSize,sSize);
+        applyCScaleBiasNCHWMishMaskKernel<<<grid,threads, 0, katagoLaunchStream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,cSize,sSize);
     }
     else if(activation == ACTIVATION_SILU) {
       if(isHalf)
-        applyCScaleBiasNCHWSiluMaskHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,cSize,sSize);
+        applyCScaleBiasNCHWSiluMaskHalfKernel<<<grid,threads, 0, katagoLaunchStream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,cSize,sSize);
       else
-        applyCScaleBiasNCHWSiluMaskKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,cSize,sSize);
+        applyCScaleBiasNCHWSiluMaskKernel<<<grid,threads, 0, katagoLaunchStream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,cSize,sSize);
     }
     else if(activation == ACTIVATION_MISH_SCALE8) {
       if(isHalf)
-        applyCScaleBiasNCHWMishScale8MaskHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,cSize,sSize);
+        applyCScaleBiasNCHWMishScale8MaskHalfKernel<<<grid,threads, 0, katagoLaunchStream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,cSize,sSize);
       else
-        applyCScaleBiasNCHWMishScale8MaskKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,cSize,sSize);
+        applyCScaleBiasNCHWMishScale8MaskKernel<<<grid,threads, 0, katagoLaunchStream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,cSize,sSize);
     }
     else {
       throw std::runtime_error("customCudaApplyCScaleBiasNCHW: unsupported activation");
@@ -2137,33 +2150,33 @@ static void sharedApplyCScaleBiasNHWC(const void* in, void* out, const void* sca
   if(mask == NULL) {
     if(activation == ACTIVATION_IDENTITY) {
       if(isHalf)
-        applyCScaleBiasNHWCHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,sSize,cSize);
+        applyCScaleBiasNHWCHalfKernel<<<grid,threads, 0, katagoLaunchStream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,sSize,cSize);
       else
-        applyCScaleBiasNHWCKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,sSize,cSize);
+        applyCScaleBiasNHWCKernel<<<grid,threads, 0, katagoLaunchStream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,sSize,cSize);
     }
     else if(activation == ACTIVATION_RELU) {
       if(isHalf)
-        applyCScaleBiasNHWCReluHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,sSize,cSize);
+        applyCScaleBiasNHWCReluHalfKernel<<<grid,threads, 0, katagoLaunchStream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,sSize,cSize);
       else
-        applyCScaleBiasNHWCReluKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,sSize,cSize);
+        applyCScaleBiasNHWCReluKernel<<<grid,threads, 0, katagoLaunchStream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,sSize,cSize);
     }
     else if(activation == ACTIVATION_MISH) {
       if(isHalf)
-        applyCScaleBiasNHWCMishHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,sSize,cSize);
+        applyCScaleBiasNHWCMishHalfKernel<<<grid,threads, 0, katagoLaunchStream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,sSize,cSize);
       else
-        applyCScaleBiasNHWCMishKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,sSize,cSize);
+        applyCScaleBiasNHWCMishKernel<<<grid,threads, 0, katagoLaunchStream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,sSize,cSize);
     }
     else if(activation == ACTIVATION_SILU) {
       if(isHalf)
-        applyCScaleBiasNHWCSiluHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,sSize,cSize);
+        applyCScaleBiasNHWCSiluHalfKernel<<<grid,threads, 0, katagoLaunchStream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,sSize,cSize);
       else
-        applyCScaleBiasNHWCSiluKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,sSize,cSize);
+        applyCScaleBiasNHWCSiluKernel<<<grid,threads, 0, katagoLaunchStream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,sSize,cSize);
     }
     else if(activation == ACTIVATION_MISH_SCALE8) {
       if(isHalf)
-        applyCScaleBiasNHWCMishScale8HalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,sSize,cSize);
+        applyCScaleBiasNHWCMishScale8HalfKernel<<<grid,threads, 0, katagoLaunchStream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,sSize,cSize);
       else
-        applyCScaleBiasNHWCMishScale8Kernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,sSize,cSize);
+        applyCScaleBiasNHWCMishScale8Kernel<<<grid,threads, 0, katagoLaunchStream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,sSize,cSize);
     }
     else {
       throw std::runtime_error("customCudaApplyCScaleBiasNHWC: unsupported activation");
@@ -2172,33 +2185,33 @@ static void sharedApplyCScaleBiasNHWC(const void* in, void* out, const void* sca
   else {
     if(activation == ACTIVATION_IDENTITY) {
       if(isHalf)
-        applyCScaleBiasNHWCMaskHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,sSize,cSize);
+        applyCScaleBiasNHWCMaskHalfKernel<<<grid,threads, 0, katagoLaunchStream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,sSize,cSize);
       else
-        applyCScaleBiasNHWCMaskKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,sSize,cSize);
+        applyCScaleBiasNHWCMaskKernel<<<grid,threads, 0, katagoLaunchStream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,sSize,cSize);
     }
     else if(activation == ACTIVATION_RELU) {
       if(isHalf)
-        applyCScaleBiasNHWCReluMaskHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,sSize,cSize);
+        applyCScaleBiasNHWCReluMaskHalfKernel<<<grid,threads, 0, katagoLaunchStream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,sSize,cSize);
       else
-        applyCScaleBiasNHWCReluMaskKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,sSize,cSize);
+        applyCScaleBiasNHWCReluMaskKernel<<<grid,threads, 0, katagoLaunchStream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,sSize,cSize);
     }
     else if(activation == ACTIVATION_MISH) {
       if(isHalf)
-        applyCScaleBiasNHWCMishMaskHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,sSize,cSize);
+        applyCScaleBiasNHWCMishMaskHalfKernel<<<grid,threads, 0, katagoLaunchStream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,sSize,cSize);
       else
-        applyCScaleBiasNHWCMishMaskKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,sSize,cSize);
+        applyCScaleBiasNHWCMishMaskKernel<<<grid,threads, 0, katagoLaunchStream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,sSize,cSize);
     }
     else if(activation == ACTIVATION_SILU) {
       if(isHalf)
-        applyCScaleBiasNHWCSiluMaskHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,sSize,cSize);
+        applyCScaleBiasNHWCSiluMaskHalfKernel<<<grid,threads, 0, katagoLaunchStream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,sSize,cSize);
       else
-        applyCScaleBiasNHWCSiluMaskKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,sSize,cSize);
+        applyCScaleBiasNHWCSiluMaskKernel<<<grid,threads, 0, katagoLaunchStream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,sSize,cSize);
     }
     else if(activation == ACTIVATION_MISH_SCALE8) {
       if(isHalf)
-        applyCScaleBiasNHWCMishScale8MaskHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,sSize,cSize);
+        applyCScaleBiasNHWCMishScale8MaskHalfKernel<<<grid,threads, 0, katagoLaunchStream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,sSize,cSize);
       else
-        applyCScaleBiasNHWCMishScale8MaskKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,sSize,cSize);
+        applyCScaleBiasNHWCMishScale8MaskKernel<<<grid,threads, 0, katagoLaunchStream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,sSize,cSize);
     }
     else {
       throw std::runtime_error("customCudaApplyCScaleBiasNHWC: unsupported activation");
@@ -2413,7 +2426,7 @@ void customCudaApplyRoPE(
     throw std::runtime_error("customCudaApplyRoPE: numBufHeads*numPairs (" + std::to_string(totalHP) + ") exceeds the 1024 threads/block limit");
   int threads = ((totalHP + 31) / 32) * 32;  // round up to warp size
   dim3 blocks(seqLen, batchSize, 1);
-  applyRoPEKernel<<<blocks, threads>>>(
+  applyRoPEKernel<<<blocks, threads, 0, katagoLaunchStream>>>(
     buf, cosTable, sinTable, batchSize, seqLen, numBufHeads, numKVHeads, qHeadDim, totalDim, numPairs, learnableRope ? 1 : 0
   );
 }
@@ -2427,7 +2440,7 @@ void customCudaApplyRoPE(
     throw std::runtime_error("customCudaApplyRoPE: numBufHeads*numPairs (" + std::to_string(totalHP) + ") exceeds the 1024 threads/block limit");
   int threads = ((totalHP + 31) / 32) * 32;
   dim3 blocks(seqLen, batchSize, 1);
-  applyRoPEHalfKernel<<<blocks, threads>>>(
+  applyRoPEHalfKernel<<<blocks, threads, 0, katagoLaunchStream>>>(
     buf, cosTable, sinTable, batchSize, seqLen, numBufHeads, numKVHeads, qHeadDim, totalDim, numPairs, learnableRope ? 1 : 0
   );
 }
@@ -2444,7 +2457,7 @@ void customCudaApplyRoPELearnableRecompute(
     throw std::runtime_error("customCudaApplyRoPELearnableRecompute: numBufHeads*numPairs (" + std::to_string(totalHP) + ") exceeds the 1024 threads/block limit");
   int threads = ((totalHP + 31) / 32) * 32;
   dim3 blocks(seqLen, batchSize, 1);
-  applyRoPELearnableRecomputeKernel<<<blocks, threads>>>(
+  applyRoPELearnableRecomputeKernel<<<blocks, threads, 0, katagoLaunchStream>>>(
     buf, freqs, batchSize, seqLen, numBufHeads, numKVHeads, qHeadDim, totalDim, numPairs, nnXLen
   );
 }
@@ -2458,7 +2471,7 @@ void customCudaApplyRoPELearnableRecompute(
     throw std::runtime_error("customCudaApplyRoPELearnableRecompute: numBufHeads*numPairs (" + std::to_string(totalHP) + ") exceeds the 1024 threads/block limit");
   int threads = ((totalHP + 31) / 32) * 32;
   dim3 blocks(seqLen, batchSize, 1);
-  applyRoPELearnableRecomputeHalfKernel<<<blocks, threads>>>(
+  applyRoPELearnableRecomputeHalfKernel<<<blocks, threads, 0, katagoLaunchStream>>>(
     buf, freqs, batchSize, seqLen, numBufHeads, numKVHeads, qHeadDim, totalDim, numPairs, nnXLen
   );
 }
@@ -2644,7 +2657,7 @@ void flashAttentionKernelHalf(
   do {                                                                          \
     int totalQPerBlock = (BQ) * (QPT);                                          \
     dim3 grid((seqLen + totalQPerBlock - 1) / totalQPerBlock, batchSize * numHeads); \
-    flashAttentionKernelFloat<(QD), (VD), (BQ), (BKV), (QPT)><<<grid, (BQ)>>>( \
+    flashAttentionKernelFloat<(QD), (VD), (BQ), (BKV), (QPT)><<<grid, (BQ), 0, katagoLaunchStream>>>( \
       Q, K, V, mask, output, seqLen, numHeads, numKVHeads, scale);              \
   } while(0)
 
@@ -2652,7 +2665,7 @@ void flashAttentionKernelHalf(
   do {                                                                          \
     int totalQPerBlock = (BQ) * (QPT);                                          \
     dim3 grid((seqLen + totalQPerBlock - 1) / totalQPerBlock, batchSize * numHeads); \
-    flashAttentionKernelHalf<(QD), (VD), (BQ), (BKV), (QPT)><<<grid, (BQ)>>>(  \
+    flashAttentionKernelHalf<(QD), (VD), (BQ), (BKV), (QPT)><<<grid, (BQ), 0, katagoLaunchStream>>>(  \
       Q, K, V, mask, output, seqLen, numHeads, numKVHeads, scale);              \
   } while(0)
 
@@ -2741,14 +2754,14 @@ void customCudaMaskToAttnBiasFull(const float* mask, float* outBias, int batchSi
     return;
   int threads = 128;
   dim3 blocks((seqLen + threads - 1) / threads, seqLen, batchSize);
-  maskToAttnBiasFullKernel<<<blocks, threads>>>(mask, outBias, seqLen);
+  maskToAttnBiasFullKernel<<<blocks, threads, 0, katagoLaunchStream>>>(mask, outBias, seqLen);
 }
 void customCudaMaskToAttnBiasFull(const half* mask, half* outBias, int batchSize, int seqLen) {
   if(batchSize <= 0 || seqLen <= 0)
     return;
   int threads = 128;
   dim3 blocks((seqLen + threads - 1) / threads, seqLen, batchSize);
-  maskToAttnBiasFullHalfKernel<<<blocks, threads>>>(mask, outBias, seqLen);
+  maskToAttnBiasFullHalfKernel<<<blocks, threads, 0, katagoLaunchStream>>>(mask, outBias, seqLen);
 }
 
 //--------------------------------------------------------------------------------------------------------------
@@ -2810,7 +2823,7 @@ void customCudaSwiGLU(const float* a, const float* b, float* out, int size) {
     return;
   int threads = targetNumThreads;
   int blocks = (size + threads - 1) / threads;
-  swiGLUKernel<<<blocks, threads>>>(a, b, out, size);
+  swiGLUKernel<<<blocks, threads, 0, katagoLaunchStream>>>(a, b, out, size);
 }
 void customCudaSwiGLU(const half* a, const half* b, half* out, int size) {
   if(size <= 0)
@@ -2820,7 +2833,7 @@ void customCudaSwiGLU(const half* a, const half* b, half* out, int size) {
   int pairCount = size >> 1;
   int blocks = (pairCount + threads * ELTS_PER_THREAD - 1) / (threads * ELTS_PER_THREAD);
   if(blocks < 1) blocks = 1;  // ensure the odd-size tail still gets a block
-  swiGLUHalfStrideKernel<ELTS_PER_THREAD><<<blocks, threads>>>(a, b, out, size);
+  swiGLUHalfStrideKernel<ELTS_PER_THREAD><<<blocks, threads, 0, katagoLaunchStream>>>(a, b, out, size);
 }
 
 //--------------------------------------------------------------------------------------------------------------
@@ -2866,7 +2879,7 @@ void customCudaMaskedResidualAddNCHW(float* trunk, const float* residual, const 
   splitThreadsAcrossDim01(xySize, cSize, xyThreads, xyBlocks, cThreads, cBlocks);
   dim3 grid(xyBlocks, cBlocks, nSize);
   dim3 threads(xyThreads, cThreads, 1);
-  maskedResidualAddNCHWKernel<<<grid, threads>>>(trunk, residual, mask, cSize, xySize);
+  maskedResidualAddNCHWKernel<<<grid, threads, 0, katagoLaunchStream>>>(trunk, residual, mask, cSize, xySize);
 }
 void customCudaMaskedResidualAddNCHW(half* trunk, const half* residual, const half* mask, int nSize, int cSize, int xySize) {
   if(nSize > 65535)
@@ -2876,7 +2889,7 @@ void customCudaMaskedResidualAddNCHW(half* trunk, const half* residual, const ha
   splitThreadsAcrossDim01(xySize, cSize, xyThreads, xyBlocks, cThreads, cBlocks);
   dim3 grid(xyBlocks, cBlocks, nSize);
   dim3 threads(xyThreads, cThreads, 1);
-  maskedResidualAddNCHWHalfKernel<<<grid, threads>>>(trunk, residual, mask, cSize, xySize);
+  maskedResidualAddNCHWHalfKernel<<<grid, threads, 0, katagoLaunchStream>>>(trunk, residual, mask, cSize, xySize);
 }
 
 __global__
@@ -2917,7 +2930,7 @@ void customCudaMaskedResidualAddNHWC(float* trunk, const float* residual, const 
   splitThreadsAcrossDim01(cSize, xySize, cThreads, cBlocks, xyThreads, xyBlocks);
   dim3 grid(cBlocks, xyBlocks, nSize);
   dim3 threads(cThreads, xyThreads, 1);
-  maskedResidualAddNHWCKernel<<<grid, threads>>>(trunk, residual, mask, xySize, cSize);
+  maskedResidualAddNHWCKernel<<<grid, threads, 0, katagoLaunchStream>>>(trunk, residual, mask, xySize, cSize);
 }
 void customCudaMaskedResidualAddNHWC(half* trunk, const half* residual, const half* mask, int nSize, int xySize, int cSize) {
   if(nSize > 65535)
@@ -2927,7 +2940,7 @@ void customCudaMaskedResidualAddNHWC(half* trunk, const half* residual, const ha
   splitThreadsAcrossDim01(cSize, xySize, cThreads, cBlocks, xyThreads, xyBlocks);
   dim3 grid(cBlocks, xyBlocks, nSize);
   dim3 threads(cThreads, xyThreads, 1);
-  maskedResidualAddNHWCHalfKernel<<<grid, threads>>>(trunk, residual, mask, xySize, cSize);
+  maskedResidualAddNHWCHalfKernel<<<grid, threads, 0, katagoLaunchStream>>>(trunk, residual, mask, xySize, cSize);
 }
 
 //--------------------------------------------------------------------------------------------------------------
@@ -3132,7 +3145,7 @@ void customCudaRMSNormGammaBetaNHWC(
   int threads = 1;
   while(threads < cSize && threads < targetNumThreads) threads *= 2;
   int sharedMem = threads * sizeof(float);
-  rmsNormGammaBetaNHWCKernel<<<totalPositions, threads, sharedMem>>>(
+  rmsNormGammaBetaNHWCKernel<<<totalPositions, threads, sharedMem, katagoLaunchStream>>>(
     in, out, gamma, beta, mask, nSize, xySize, cSize, epsilon, activation);
 }
 void customCudaRMSNormGammaBetaNHWC(
@@ -3153,17 +3166,17 @@ void customCudaRMSNormGammaBetaNHWC(
   if(cSize % 2 == 0) {
     int halfPairs = cSize / 2;
     if(halfPairs <= 512 && halfPairs % 32 == 0) {
-      rmsNormGammaBetaNHWCHalfVecKernel<1><<<totalPositions, halfPairs>>>(
+      rmsNormGammaBetaNHWCHalfVecKernel<1><<<totalPositions, halfPairs, 0, katagoLaunchStream>>>(
         in, out, gamma, beta, mask, nSize, xySize, cSize, epsilon, activation);
       return;
     }
     if(halfPairs % (2 * 32) == 0 && halfPairs / 2 <= 512) {
-      rmsNormGammaBetaNHWCHalfVecKernel<2><<<totalPositions, halfPairs / 2>>>(
+      rmsNormGammaBetaNHWCHalfVecKernel<2><<<totalPositions, halfPairs / 2, 0, katagoLaunchStream>>>(
         in, out, gamma, beta, mask, nSize, xySize, cSize, epsilon, activation);
       return;
     }
     if(halfPairs % (4 * 32) == 0 && halfPairs / 4 <= 512) {
-      rmsNormGammaBetaNHWCHalfVecKernel<4><<<totalPositions, halfPairs / 4>>>(
+      rmsNormGammaBetaNHWCHalfVecKernel<4><<<totalPositions, halfPairs / 4, 0, katagoLaunchStream>>>(
         in, out, gamma, beta, mask, nSize, xySize, cSize, epsilon, activation);
       return;
     }
@@ -3173,7 +3186,7 @@ void customCudaRMSNormGammaBetaNHWC(
   int threads = 1;
   while(threads < cSize && threads < targetNumThreads) threads *= 2;
   int sharedMem = threads * sizeof(float);
-  rmsNormGammaBetaNHWCHalfKernel<<<totalPositions, threads, sharedMem>>>(
+  rmsNormGammaBetaNHWCHalfKernel<<<totalPositions, threads, sharedMem, katagoLaunchStream>>>(
     in, out, gamma, beta, mask, nSize, xySize, cSize, epsilon, activation);
 }
 
@@ -3270,7 +3283,7 @@ void customCudaRMSNormGammaBetaNCHW(
   int threads = 1;
   while(threads < cSize && threads < targetNumThreads) threads *= 2;
   int sharedMem = threads * sizeof(float);
-  rmsNormGammaBetaNCHWKernel<<<totalPositions, threads, sharedMem>>>(
+  rmsNormGammaBetaNCHWKernel<<<totalPositions, threads, sharedMem, katagoLaunchStream>>>(
     in, out, gamma, beta, mask, nSize, cSize, xySize, epsilon, activation);
 }
 void customCudaRMSNormGammaBetaNCHW(
@@ -3284,7 +3297,7 @@ void customCudaRMSNormGammaBetaNCHW(
   int threads = 1;
   while(threads < cSize && threads < targetNumThreads) threads *= 2;
   int sharedMem = threads * sizeof(float);
-  rmsNormGammaBetaNCHWHalfKernel<<<totalPositions, threads, sharedMem>>>(
+  rmsNormGammaBetaNCHWHalfKernel<<<totalPositions, threads, sharedMem, katagoLaunchStream>>>(
     in, out, gamma, beta, mask, nSize, cSize, xySize, epsilon, activation);
 }
 
@@ -3587,15 +3600,15 @@ void customCudaSpatialRMSNormNHWC(
   int threads1 = targetNumThreads;
   int sharedMem1 = threads1 * sizeof(float);
   dim3 grid1(numBlocksPerBatch, nSize);
-  spatialRMSNormSumSqKernel<true><<<grid1, threads1, sharedMem1>>>(
+  spatialRMSNormSumSqKernel<true><<<grid1, threads1, sharedMem1, katagoLaunchStream>>>(
     in, mask, sumSqBuf, totalElems, cSize, xySize, numBlocksPerBatch, partialStride);
 
-  spatialRMSNormReduceKernel<<<nSize, 1>>>(sumSqBuf, sumSqBuf, numBlocksPerBatch, partialStride);
+  spatialRMSNormReduceKernel<<<nSize, 1, 0, katagoLaunchStream>>>(sumSqBuf, sumSqBuf, numBlocksPerBatch, partialStride);
 
   int threads2 = targetNumThreads;
   int applyBlocks = spatialRMSNormApplyBlocks(totalElems, threads2);
   dim3 grid2(applyBlocks, nSize);
-  spatialRMSNormApplyNHWCKernel<<<grid2, threads2>>>(
+  spatialRMSNormApplyNHWCKernel<<<grid2, threads2, 0, katagoLaunchStream>>>(
     in, out, gamma, beta, mask, maskSum, sumSqBuf, totalElems, cSize, xySize, epsilon, activation, numBlocksPerBatch, partialStride);
 }
 void customCudaSpatialRMSNormNHWC(
@@ -3614,10 +3627,10 @@ void customCudaSpatialRMSNormNHWC(
   int threads1 = targetNumThreads;
   int sharedMem1 = threads1 * sizeof(float);
   dim3 grid1(numBlocksPerBatch, nSize);
-  spatialRMSNormSumSqHalfKernel<true><<<grid1, threads1, sharedMem1>>>(
+  spatialRMSNormSumSqHalfKernel<true><<<grid1, threads1, sharedMem1, katagoLaunchStream>>>(
     in, mask, sumSqBuf, totalElems, cSize, xySize, numBlocksPerBatch, partialStride);
 
-  spatialRMSNormReduceKernel<<<nSize, 1>>>(sumSqBuf, sumSqBuf, numBlocksPerBatch, partialStride);
+  spatialRMSNormReduceKernel<<<nSize, 1, 0, katagoLaunchStream>>>(sumSqBuf, sumSqBuf, numBlocksPerBatch, partialStride);
 
   int threads2 = targetNumThreads;
   //totalElems/2: the half kernel processes half2 pairs when cSize is even, the common case.
@@ -3625,7 +3638,7 @@ void customCudaSpatialRMSNormNHWC(
   //grid-striding keeps correct.
   int applyBlocks = spatialRMSNormApplyBlocks(totalElems / 2, threads2);
   dim3 grid2(applyBlocks, nSize);
-  spatialRMSNormApplyNHWCHalfKernel<<<grid2, threads2>>>(
+  spatialRMSNormApplyNHWCHalfKernel<<<grid2, threads2, 0, katagoLaunchStream>>>(
     in, out, gamma, beta, mask, maskSum, sumSqBuf, totalElems, cSize, xySize, epsilon, activation, numBlocksPerBatch, partialStride);
 }
 
@@ -3645,15 +3658,15 @@ void customCudaSpatialRMSNormNCHW(
   int threads1 = targetNumThreads;
   int sharedMem1 = threads1 * sizeof(float);
   dim3 grid1(numBlocksPerBatch, nSize);
-  spatialRMSNormSumSqKernel<false><<<grid1, threads1, sharedMem1>>>(
+  spatialRMSNormSumSqKernel<false><<<grid1, threads1, sharedMem1, katagoLaunchStream>>>(
     in, mask, sumSqBuf, totalElems, cSize, xySize, numBlocksPerBatch, partialStride);
 
-  spatialRMSNormReduceKernel<<<nSize, 1>>>(sumSqBuf, sumSqBuf, numBlocksPerBatch, partialStride);
+  spatialRMSNormReduceKernel<<<nSize, 1, 0, katagoLaunchStream>>>(sumSqBuf, sumSqBuf, numBlocksPerBatch, partialStride);
 
   int threads2 = targetNumThreads;
   int applyBlocks = spatialRMSNormApplyBlocks(totalElems, threads2);
   dim3 grid2(applyBlocks, nSize);
-  spatialRMSNormApplyNCHWKernel<<<grid2, threads2>>>(
+  spatialRMSNormApplyNCHWKernel<<<grid2, threads2, 0, katagoLaunchStream>>>(
     in, out, gamma, beta, mask, maskSum, sumSqBuf, totalElems, cSize, xySize, epsilon, activation, numBlocksPerBatch, partialStride);
 }
 void customCudaSpatialRMSNormNCHW(
@@ -3672,14 +3685,14 @@ void customCudaSpatialRMSNormNCHW(
   int threads1 = targetNumThreads;
   int sharedMem1 = threads1 * sizeof(float);
   dim3 grid1(numBlocksPerBatch, nSize);
-  spatialRMSNormSumSqHalfKernel<false><<<grid1, threads1, sharedMem1>>>(
+  spatialRMSNormSumSqHalfKernel<false><<<grid1, threads1, sharedMem1, katagoLaunchStream>>>(
     in, mask, sumSqBuf, totalElems, cSize, xySize, numBlocksPerBatch, partialStride);
 
-  spatialRMSNormReduceKernel<<<nSize, 1>>>(sumSqBuf, sumSqBuf, numBlocksPerBatch, partialStride);
+  spatialRMSNormReduceKernel<<<nSize, 1, 0, katagoLaunchStream>>>(sumSqBuf, sumSqBuf, numBlocksPerBatch, partialStride);
 
   int threads2 = targetNumThreads;
   int applyBlocks = spatialRMSNormApplyBlocks(totalElems, threads2);
   dim3 grid2(applyBlocks, nSize);
-  spatialRMSNormApplyNCHWHalfKernel<<<grid2, threads2>>>(
+  spatialRMSNormApplyNCHWHalfKernel<<<grid2, threads2, 0, katagoLaunchStream>>>(
     in, out, gamma, beta, mask, maskSum, sumSqBuf, totalElems, cSize, xySize, epsilon, activation, numBlocksPerBatch, partialStride);
 }
