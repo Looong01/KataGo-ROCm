@@ -549,8 +549,13 @@ struct ComputeHandle {
       onnxData = loadedModel.rawOnnxBytes.data();
       onnxSize = loadedModel.rawOnnxBytes.size();
     } else {
+      OnnxModelBuilder::BuildParams buildParams;
+      buildParams.nnXLen = ctx->nnXLen;
+      buildParams.nnYLen = ctx->nnYLen;
+      buildParams.requireExactNNLen = false;
+      buildParams.transformerNHWC = false;
       OnnxModelBuilder::Result onnxResult =
-        OnnxModelBuilder::build(loadedModel.modelDesc, ctx->nnXLen, ctx->nnYLen, /*requireExactNNLen=*/false, /*transformerNHWC=*/false, logger);
+        OnnxModelBuilder::build(loadedModel.modelDesc, buildParams, logger);
       builtOnnxBytes = std::move(onnxResult.serializedModel);
       if(logger != NULL)
         logger->write("WinML backend: ONNX graph built from .bin.gz (" +
