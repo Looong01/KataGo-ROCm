@@ -941,7 +941,23 @@ struct RMSNormLayer {
       activation(activation_),
       gamma(desc.gamma),
       beta(desc.beta)
-  {}
+  {
+    // All activation kinds desc.cpp can produce for a trunk tip are implemented in apply();
+    // reject anything else so a future kind fails loudly instead of silently acting as identity.
+    if(activation != ACTIVATION_IDENTITY && activation != ACTIVATION_RELU &&
+       activation != ACTIVATION_MISH && activation != ACTIVATION_SILU)
+      throw StringError(name + ": RMSNorm layer unsupported activation: " + Global::intToString(activation));
+  }
+
+  inline float applyActivation(float v) const {
+    if(activation == ACTIVATION_RELU)
+      return std::max(v, 0.0f);
+    if(activation == ACTIVATION_MISH)
+      return v * tanhf(v < 20.0f ? log1pf(expf(v)) : v);
+    if(activation == ACTIVATION_SILU)
+      return v / (1.0f + expf(-v));
+    return v;
+  }
 
   void apply(
     CONSTTENSORMAP4* input,
@@ -973,9 +989,7 @@ struct RMSNormLayer {
             float rms = 1.0f / sqrtf(sumSq / (float)numChannels + epsilon);
             for(int c = 0; c < numChannels; c++) {
               float v = (*input)(c, w, h, n) * rms * gamma[c] + beta[c];
-              if(activation == ACTIVATION_SILU)
-                v = v / (1.0f + expf(-v));
-              (*output)(c, w, h, n) = v;
+              (*output)(c, w, h, n) = applyActivation(v);
             }
           }
         }
@@ -1010,9 +1024,7 @@ struct RMSNormLayer {
             }
             for(int c = 0; c < numChannels; c++) {
               float v = (*input)(c, w, h, n) * rms * gamma[c] + beta[c];
-              if(activation == ACTIVATION_SILU)
-                v = v / (1.0f + expf(-v));
-              (*output)(c, w, h, n) = v;
+              (*output)(c, w, h, n) = applyActivation(v);
             }
           }
         }
@@ -2617,6 +2629,24 @@ void NeuralNet::getOutput(
 
 
 void NeuralNet::printDevices() {
+}
+
+std::string NeuralNet::getRuntimeBackendDetail(ConfigParser& cfg) {
+  (void)cfg;
+  return std::string();
+}
+
+NeuralNet::BatchPolicy NeuralNet::getBatchPolicy(ConfigParser& cfg) {
+  (void)cfg;
+  return NeuralNet::BatchPolicy::CpuLocal;
+}
+
+int NeuralNet::getNumEffectiveDevices(ConfigParser& cfg, const std::vector<int>& gpuIdxByServerThread) {
+  // There are no devices to select - the server threads are CPU workers on the one machine - so
+  // ignore any gpu/device config keys rather than letting stray ones inflate the count.
+  (void)cfg;
+  (void)gpuIdxByServerThread;
+  return 1;
 }
 
 // FOR TESTING ---------------------------------------------------------------------------------------------------------

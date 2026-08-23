@@ -158,18 +158,17 @@ int MainCmds::analysis(const vector<string>& args) {
     Setup::initializeSession(cfg);
     const int expectedConcurrentEvals = numAnalysisThreads * defaultParams.numThreads;
     const bool defaultRequireExactNNLen = false;
-    const int defaultMaxBatchSize = -1;
     const bool disableFP16 = false;
     const string expectedSha256 = "";
     nnEval = Setup::initializeNNEvaluator(
       modelFile,modelFile,expectedSha256,cfg,logger,seedRand,expectedConcurrentEvals,
-      NNPos::MAX_BOARD_LEN,NNPos::MAX_BOARD_LEN,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+      NNPos::MAX_BOARD_LEN,NNPos::MAX_BOARD_LEN,Setup::MaxBatchSizeRequest::requireFromConfig(),defaultRequireExactNNLen,disableFP16,
       Setup::SETUP_FOR_ANALYSIS
     );
     if(humanModelFile != "") {
       humanEval = Setup::initializeNNEvaluator(
         humanModelFile,humanModelFile,expectedSha256,cfg,logger,seedRand,expectedConcurrentEvals,
-        NNPos::MAX_BOARD_LEN,NNPos::MAX_BOARD_LEN,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+        NNPos::MAX_BOARD_LEN,NNPos::MAX_BOARD_LEN,Setup::MaxBatchSizeRequest::requireFromConfig(),defaultRequireExactNNLen,disableFP16,
         Setup::SETUP_FOR_ANALYSIS
       );
       if(!humanEval->requiresSGFMetadata()) {
@@ -912,9 +911,9 @@ int MainCmds::analysis(const vector<string>& args) {
 
       if(input.find("komi") != input.end()) {
         double komi;
-        static_assert(Rules::MIN_USER_KOMI == -150.0f, "");
-        static_assert(Rules::MAX_USER_KOMI == 150.0f, "");
-        const char* msg = "Must be a integer or half-integer from -150.0 to 150.0";
+        static_assert(Rules::MIN_USER_KOMI == -400.0f, "");
+        static_assert(Rules::MAX_USER_KOMI == 400.0f, "");
+        const char* msg = "Must be a integer or half-integer from -400.0 to 400.0";
         bool suc = parseDouble(input, "komi", komi, Rules::MIN_USER_KOMI, Rules::MAX_USER_KOMI, msg);
         if(!suc)
           continue;
@@ -1076,12 +1075,14 @@ int MainCmds::analysis(const vector<string>& args) {
           reportErrorForId(rbase.id, field, string("Must be a list of dicts with subfields 'player', 'moves', 'untilDepth'"));
           continue;
         }
-        if(hasAllowMoves && avoidParamsList.size() > 1) {
-          reportErrorForId(rbase.id, field, string("Currently allowMoves only allows one entry"));
+        if(hasAllowMoves && avoidParamsList.size() > 2) {
+          reportErrorForId(rbase.id, field, string("Currently allowMoves only allows at most one entry per player"));
           continue;
         }
 
         bool failed = false;
+        bool gotAllowMovesBlack = false;
+        bool gotAllowMovesWhite = false;
         for(size_t i = 0; i<avoidParamsList.size(); i++) {
           json& avoidParams = avoidParamsList[i];
           if(avoidParams.find("moves") == avoidParams.end() ||
@@ -1102,6 +1103,18 @@ int MainCmds::analysis(const vector<string>& args) {
           if(!suc) { failed = true; break; }
           suc = parseInteger(avoidParams, "untilDepth", untilDepth, 1, 1000000000, "Must be a positive integer");
           if(!suc) { failed = true; break; }
+
+          //For allowMoves, at most one entry per player is permitted. Two entries for the same player would be
+          //ambiguous/incorrect since the std::fill below for the second entry would wipe out the first entry's allowed locs.
+          //Two entries for different players are fine since they write to separate per-player vectors.
+          if(hasAllowMoves) {
+            bool& gotAllowMoves = avoidPla == P_BLACK ? gotAllowMovesBlack : gotAllowMovesWhite;
+            if(gotAllowMoves) {
+              reportErrorForId(rbase.id, field, string("Cannot specify allowMoves more than once for the same player"));
+              failed = true; break;
+            }
+            gotAllowMoves = true;
+          }
 
           vector<int>& avoidMoveUntilByLoc = avoidPla == P_BLACK ? rbase.avoidMoveUntilByLocBlack : rbase.avoidMoveUntilByLocWhite;
           avoidMoveUntilByLoc.resize(Board::MAX_ARR_SIZE);
@@ -1144,7 +1157,10 @@ int MainCmds::analysis(const vector<string>& args) {
       }
 
       Player nextPla = initialPlayer;
-      BoardHistory hist(board,nextPla,rules,0);
+      //Keep this request's history consistent with the BoardHistoryModes that the search
+      //for this request will resolve to. (The search would re-stamp its own copy anyway, but this keeps
+      //any adjudication done during request setup/replay consistent with them.)
+      BoardHistory hist(board,nextPla,rules,0,Search::resolveHistoryModes(rbase.params, nnEval));
       hist.setAssumeMultipleStartingBlackMovesAreHandicap(assumeMultipleStartingBlackMovesAreHandicap);
 
       if(warnUnusedFields) {

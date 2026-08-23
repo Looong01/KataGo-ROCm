@@ -184,7 +184,8 @@ void TestSearchCommon::runBotOnSgf(AsyncBot* bot, const string& sgfStr, const Ru
   Player nextPla;
   BoardHistory hist;
   Rules initialRules = sgf->getRulesOrFailAllowUnspecified(defaultRules);
-  sgf->setupBoardAndHistAssumeLegal(initialRules, board, nextPla, hist, turnIdx);
+  sgf->setupBoardAndHistAssumeLegal(initialRules, board, nextPla, hist, turnIdx,
+    Search::resolveHistoryModes(bot->getSearch()->searchParams, bot->getSearch()->nnEvaluator));
   hist.setKomi(overrideKomi);
   runBotOnPosition(bot,board,nextPla,hist,opts);
 }
@@ -205,6 +206,8 @@ NNEvaluator* TestSearchCommon::startNNEval(
   //NHWC layout is no longer a generic NNEvaluator option; only the CUDA backend reads it (off cfg).
   //Route the test's useNHWC param into a cudaUseNHWC override so it still drives the CUDA layout.
   cfg.overrideKey("cudaUseNHWC", useNHWC ? "true" : "false");
+  //The ONNX backend requires an explicit provider choice in real configs, so tests set cpu.
+  cfg.overrideKey("onnxProvider", "cpu");
   int numNNServerThreadsPerModel = 1;
   bool nnRandomize = false;
   string nnRandSeed = "runSearchTestsRandSeed"+seed;
@@ -235,7 +238,6 @@ NNEvaluator* TestSearchCommon::startNNEval(
     nnRandSeed,
     nnRandomize,
     defaultSymmetry,
-    false,
     cfg
   );
 

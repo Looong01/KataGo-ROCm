@@ -181,6 +181,7 @@ static void maybeParseBonusFile(
   int boardSizeY,
   const Rules& rules,
   int repBound,
+  const BoardHistoryModes& bookHistoryModes,
   double bonusFileScale,
   Logger& logger,
   std::map<BookHash,double>& bonusByHash,
@@ -205,7 +206,8 @@ static void maybeParseBonusFile(
              comments.find("BRANCH") != string::npos
            )
         ) {
-          BoardHistory hist(sgfHist.initialBoard, sgfHist.initialPla, rules, sgfHist.initialEncorePhase);
+          //Replay and hash under the book's BoardHistoryModes so hashes match book nodes.
+          BoardHistory hist(sgfHist.initialBoard, sgfHist.initialPla, rules, sgfHist.initialEncorePhase, bookHistoryModes);
           Board board = hist.initialBoard;
           for(size_t i = 0; i<sgfHist.moveHistory.size(); i++) {
             bool suc = hist.makeBoardMoveTolerant(board, sgfHist.moveHistory[i].loc, sgfHist.moveHistory[i].pla);
@@ -397,7 +399,8 @@ int MainCmds::genbook(const vector<string>& args) {
   Rules rules = Setup::loadSingleRules(cfg,loadKomiFromCfg);
 
   const bool hasHumanModel = humanModelFile != "";
-  const SearchParams params = Setup::loadSingleParams(cfg,Setup::SETUP_FOR_GTP,hasHumanModel);
+  //Not const - the history mode params are forced below to match the book.
+  SearchParams params = Setup::loadSingleParams(cfg,Setup::SETUP_FOR_GTP,hasHumanModel);
 
   const int boardSizeX = cfg.getInt("boardSizeX",2,Board::MAX_LEN);
   const int boardSizeY = cfg.getInt("boardSizeY",2,Board::MAX_LEN);
@@ -432,23 +435,8 @@ int MainCmds::genbook(const vector<string>& args) {
   bonusInitialBoard = Board(boardSizeX,boardSizeY);
   bonusInitialPla = P_BLACK;
 
-  for(const std::string& bonusFile: bonusFiles) {
-    maybeParseBonusFile(
-      bonusFile,
-      boardSizeX,
-      boardSizeY,
-      rules,
-      repBound,
-      bonusFileScale,
-      logger,
-      bonusByHash,
-      expandBonusByHash,
-      visitsRequiredByHash,
-      branchRequiredByHash,
-      bonusInitialBoard,
-      bonusInitialPla
-    );
-  }
+  //Bonus sgf files are parsed further below, after the BoardHistoryModes for this run are
+  //known, since the book hashes they produce depend on them.
   for(const std::string& hashBonusFile: hashBonusFiles) {
     maybeParseHashBonusFile(
       hashBonusFile,
@@ -468,20 +456,19 @@ int MainCmds::genbook(const vector<string>& args) {
   {
     Setup::initializeSession(cfg);
     const int expectedConcurrentEvals = numGameThreads * params.numThreads;
-    const int defaultMaxBatchSize = std::max(8,((numGameThreads * params.numThreads+3)/4)*4);
     const bool defaultRequireExactNNLen = true;
     const bool disableFP16 = false;
     const string expectedSha256 = "";
     nnEval = Setup::initializeNNEvaluator(
       modelFile,modelFile,expectedSha256,cfg,logger,rand,expectedConcurrentEvals,
-      boardSizeX,boardSizeY,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+      boardSizeX,boardSizeY,Setup::MaxBatchSizeRequest::fromConcurrency(),defaultRequireExactNNLen,disableFP16,
       Setup::SETUP_FOR_ANALYSIS
     );
     logger.write("Loaded neural net");
     if(humanModelFile != "") {
       humanEval = Setup::initializeNNEvaluator(
         humanModelFile,humanModelFile,expectedSha256,cfg,logger,rand,expectedConcurrentEvals,
-        boardSizeX,boardSizeY,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+        boardSizeX,boardSizeY,Setup::MaxBatchSizeRequest::fromConcurrency(),defaultRequireExactNNLen,disableFP16,
         Setup::SETUP_FOR_ANALYSIS
       );
       logger.write("Loaded human SL net with nnXLen " + Global::intToString(humanEval->getNNXLen()) + " nnYLen " + Global::intToString(humanEval->getNNYLen()));
@@ -490,6 +477,48 @@ int MainCmds::genbook(const vector<string>& args) {
   NNEvaluator* policyEvaluator = nnEval;
   if(humanEval != NULL)
     policyEvaluator = humanEval;
+
+  //Determine the BoardHistoryModes governing this run. A preexisting book's recorded values
+  //take precedence; a new book records the resolution of the config params against the model. All
+  //searches, evals, and book hashes in this run are then forced to be consistent with them.
+  bool bookFileExists;
+  {
+    std::ifstream infile;
+    bookFileExists = FileUtils::tryOpen(infile,bookFile);
+  }
+  const BoardHistoryModes bookHistoryModes =
+    bookFileExists ?
+    Book::readHistoryModesOfFileHeader(bookFile) :
+    Search::resolveHistoryModes(params, nnEval);
+  if(Search::resolveHistoryModes(params, nnEval) != bookHistoryModes)
+    logger.write(
+      "Note: preexisting book was made with alwaysComputePassAliveUnderSuicideRules=" +
+      Global::boolToString(bookHistoryModes.alwaysComputePassAliveUnderSuicideRules) +
+      " excludeTerritoryAdjacentToAtari=" +
+      Global::boolToString(bookHistoryModes.excludeTerritoryAdjacentToAtari) +
+      ", forcing those values for all searches in this run"
+    );
+  params.alwaysComputePassAliveUnderSuicideRules = bookHistoryModes.alwaysComputePassAliveUnderSuicideRules ? enabled_t::True : enabled_t::False;
+  params.excludeTerritoryAdjacentToAtari = bookHistoryModes.excludeTerritoryAdjacentToAtari ? enabled_t::True : enabled_t::False;
+
+  for(const std::string& bonusFile: bonusFiles) {
+    maybeParseBonusFile(
+      bonusFile,
+      boardSizeX,
+      boardSizeY,
+      rules,
+      repBound,
+      bookHistoryModes,
+      bonusFileScale,
+      logger,
+      bonusByHash,
+      expandBonusByHash,
+      visitsRequiredByHash,
+      branchRequiredByHash,
+      bonusInitialBoard,
+      bonusInitialPla
+    );
+  }
 
   vector<Search*> searches;
   for(int i = 0; i<numGameThreads; i++) {
@@ -506,13 +535,9 @@ int MainCmds::genbook(const vector<string>& args) {
     MakeDir::make(htmlDir);
 
   Book* book;
-  bool bookFileExists;
-  {
-    std::ifstream infile;
-    bookFileExists = FileUtils::tryOpen(infile,bookFile);
-  }
   if(bookFileExists) {
     book = Book::loadFromFile(bookFile,numBookThreads);
+    testAssert(book->historyModes == bookHistoryModes);
     if(
       boardSizeX != book->getInitialHist().getRecentBoard(0).x_size ||
       boardSizeY != book->getInitialHist().getRecentBoard(0).y_size ||
@@ -592,6 +617,7 @@ int MainCmds::genbook(const vector<string>& args) {
       rules,
       bonusInitialPla,
       repBound,
+      bookHistoryModes,
       cfgParams
     );
     logger.write("Creating new book at " + bookFile);
@@ -1629,6 +1655,8 @@ int MainCmds::writebook(const vector<string>& args) {
     boardSizeY,
     rules,
     repBound,
+    //Bonus hashes must be computed under the book's recorded BoardHistoryModes.
+    Book::readHistoryModesOfFileHeader(bookFile),
     bonusFileScale,
     logger,
     bonusByHash,
@@ -1857,13 +1885,12 @@ int MainCmds::booktoposes(const vector<string>& args) {
   {
     Setup::initializeSession(cfg);
     int expectedConcurrentEvals = numThreads;
-    int defaultMaxBatchSize = std::max(8,((numThreads+3)/4)*4);
     bool defaultRequireExactNNLen = true;
     bool disableFP16 = false;
     string expectedSha256 = "";
     nnEval = Setup::initializeNNEvaluator(
       modelFile,modelFile,expectedSha256,cfg,logger,seedRand,expectedConcurrentEvals,
-      book->initialBoard.x_size,book->initialBoard.y_size,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+      book->initialBoard.x_size,book->initialBoard.y_size,Setup::MaxBatchSizeRequest::fromConcurrency(),defaultRequireExactNNLen,disableFP16,
       Setup::SETUP_FOR_GTP
     );
   }
@@ -2143,9 +2170,10 @@ int MainCmds::comparebooks(const vector<string>& args) {
     book1->initialBoard.x_size != book2->initialBoard.x_size ||
     book1->initialBoard.y_size != book2->initialBoard.y_size ||
     book1->repBound != book2->repBound ||
-    book1->initialRules != book2->initialRules
+    book1->initialRules != book2->initialRules ||
+    book1->historyModes != book2->historyModes
   ) {
-    logger.write("ERROR: Books have different board sizes, rep bounds, or rules");
+    logger.write("ERROR: Books have different board sizes, rep bounds, rules, or BoardHistoryModes");
     delete book1;
     delete book2;
     return 1;

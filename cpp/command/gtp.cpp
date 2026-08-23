@@ -489,19 +489,18 @@ struct GTPEngine {
       }
 
       const int expectedConcurrentEvals = std::max(genmoveParams.numThreads, analysisParams.numThreads);
-      const int defaultMaxBatchSize = std::max(8,((expectedConcurrentEvals+3)/4)*4);
       const bool disableFP16 = false;
       const string expectedSha256 = "";
       nnEval = Setup::initializeNNEvaluator(
         nnModelFile,nnModelFile,expectedSha256,cfg,logger,seedRand,expectedConcurrentEvals,
-        nnXLen,nnYLen,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+        nnXLen,nnYLen,Setup::MaxBatchSizeRequest::fromConcurrency(),defaultRequireExactNNLen,disableFP16,
         Setup::SETUP_FOR_GTP
       );
       logger.write("Loaded neural net with nnXLen " + Global::intToString(nnEval->getNNXLen()) + " nnYLen " + Global::intToString(nnEval->getNNYLen()));
       if(humanModelFile != "") {
         humanEval = Setup::initializeNNEvaluator(
           humanModelFile,humanModelFile,expectedSha256,cfg,logger,seedRand,expectedConcurrentEvals,
-          nnXLen,nnYLen,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+          nnXLen,nnYLen,Setup::MaxBatchSizeRequest::fromConcurrency(),defaultRequireExactNNLen,disableFP16,
           Setup::SETUP_FOR_GTP
         );
         logger.write("Loaded human SL net with nnXLen " + Global::intToString(humanEval->getNNXLen()) + " nnYLen " + Global::intToString(humanEval->getNNYLen()));
@@ -556,7 +555,7 @@ struct GTPEngine {
 
       Board board(boardXSize,boardYSize);
       Player pla = P_BLACK;
-      BoardHistory hist(board,pla,currentRules,0);
+      BoardHistory hist(board,pla,currentRules,0,Search::resolveHistoryModes(genmoveParams,nnEval));
       vector<Move> newMoveHistory;
       setPositionAndRules(pla,board,hist,board,pla,newMoveHistory);
       clearStatsForNewGame();
@@ -589,7 +588,7 @@ struct GTPEngine {
     int newYSize = bot->getRootBoard().y_size;
     Board board(newXSize,newYSize);
     Player pla = P_BLACK;
-    BoardHistory hist(board,pla,currentRules,0);
+    BoardHistory hist(board,pla,currentRules,0,Search::resolveHistoryModes(genmoveParams,nnEval));
     vector<Move> newMoveHistory;
     setPositionAndRules(pla,board,hist,board,pla,newMoveHistory);
     clearStatsForNewGame();
@@ -611,7 +610,7 @@ struct GTPEngine {
       }
     }
     Player pla = P_BLACK;
-    BoardHistory hist(board,pla,currentRules,0);
+    BoardHistory hist(board,pla,currentRules,0,Search::resolveHistoryModes(genmoveParams,nnEval));
     hist.setInitialTurnNumber(board.numStonesOnBoard()); //Heuristic to guess at what turn this is
     vector<Move> newMoveHistory;
     setPositionAndRules(pla,board,hist,board,pla,newMoveHistory);
@@ -649,7 +648,7 @@ struct GTPEngine {
     vector<Move> moveHistoryCopy = moveHistory;
 
     Board undoneBoard = initialBoard;
-    BoardHistory undoneHist(undoneBoard,initialPla,currentRules,0);
+    BoardHistory undoneHist(undoneBoard,initialPla,currentRules,0,Search::resolveHistoryModes(genmoveParams,nnEval));
     undoneHist.setInitialTurnNumber(bot->getRootHist().initialTurnNumber);
     vector<Move> emptyMoveHistory;
     setPositionAndRules(initialPla,undoneBoard,undoneHist,initialBoard,initialPla,emptyMoveHistory);
@@ -678,7 +677,7 @@ struct GTPEngine {
     vector<Move> moveHistoryCopy = moveHistory;
 
     Board board = initialBoard;
-    BoardHistory hist(board,initialPla,newRules,0);
+    BoardHistory hist(board,initialPla,newRules,0,Search::resolveHistoryModes(genmoveParams,nnEval));
     hist.setInitialTurnNumber(bot->getRootHist().initialTurnNumber);
     vector<Move> emptyMoveHistory;
     setPositionAndRules(initialPla,board,hist,initialBoard,initialPla,emptyMoveHistory);
@@ -697,6 +696,30 @@ struct GTPEngine {
       }
     }
     return true;
+  }
+
+  //Re-replay the current game from the beginning under the currently resolved
+  //BoardHistoryModes. Used when a runtime params change (kata-set-param)
+  //flips a mode - the bot's own rootHistory gets re-stamped by setParams, but re-stamping
+  //deliberately does not re-adjudicate game state recorded under the old modes (e.g. an
+  //automatically detected game end), whereas replaying recomputes everything as if the engine had
+  //been using the new modes all along. This also keeps the state consistent with what a later
+  //rebuild-and-replay (undo, kata-set-rules) would produce.
+  void rereplayGameForHistoryModesChange() {
+    testAssert(bot->getRootHist().rules == currentRules);
+    vector<Move> moveHistoryCopy = moveHistory;
+
+    Board board = initialBoard;
+    BoardHistory hist(board,initialPla,currentRules,0,Search::resolveHistoryModes(genmoveParams,nnEval));
+    hist.setInitialTurnNumber(bot->getRootHist().initialTurnNumber);
+    vector<Move> emptyMoveHistory;
+    setPositionAndRules(initialPla,board,hist,initialBoard,initialPla,emptyMoveHistory);
+
+    for(int i = 0; i<moveHistoryCopy.size(); i++) {
+      //Tolerant internal replay, same as undo() - the mode never affects move legality.
+      bool suc = play(moveHistoryCopy[i].loc,moveHistoryCopy[i].pla);
+      testAssert(suc);
+    }
   }
 
   void ponder() {
@@ -1325,7 +1348,7 @@ struct GTPEngine {
     testAssert(bot->getRootHist().rules == currentRules);
 
     Player pla = P_BLACK;
-    BoardHistory hist(board,pla,currentRules,0);
+    BoardHistory hist(board,pla,currentRules,0,Search::resolveHistoryModes(genmoveParams,nnEval));
 
     //Also switch the initial player, expecting white should be next.
     hist.clear(board,P_WHITE,currentRules,0);
@@ -1366,7 +1389,7 @@ struct GTPEngine {
 
     Board board(xSize,ySize);
     Player pla = P_BLACK;
-    BoardHistory hist(board,pla,currentRules,0);
+    BoardHistory hist(board,pla,currentRules,0,Search::resolveHistoryModes(genmoveParams,nnEval));
     double extraBlackTemperature = 0.25;
     PlayUtils::playExtraBlack(bot->getSearchStopAndWait(), n, board, hist, extraBlackTemperature, rand);
     //Also switch the initial player, expecting white should be next.
@@ -1593,7 +1616,7 @@ struct GTPEngine {
     return Global::trim(policyStr + "\n" + wlStr + "\n" + leadStr);
   }
 
-  string rawNN(int whichSymmetry, double policyOptimism, bool useHumanModel) {
+  string rawNN(int whichSymmetry, double policyOptimism, bool useHumanModel, Player nextPla) {
     NNEvaluator* nnEvalToUse = useHumanModel ? humanEval : nnEval;
     if(nnEvalToUse == NULL)
       return "";
@@ -1603,7 +1626,13 @@ struct GTPEngine {
       if(whichSymmetry == NNInputs::SYMMETRY_ALL || whichSymmetry == symmetry) {
         Board board = bot->getRootBoard();
         BoardHistory hist = bot->getRootHist();
-        Player nextPla = bot->getRootPla();
+        //If evaluating from a player other than the one naturally to move, rebuild the history so that player
+        //is to move (mirrors how the analysis engine handles a player switch). The NN evaluator asserts that
+        //nextPla matches the history's presumed next mover. This resets ko/pass history for the position.
+        if(nextPla != hist.presumedNextMovePla) {
+          board.clearSimpleKoLoc();
+          hist.clear(board,nextPla,hist.rules,hist.encorePhase);
+        }
 
         MiscNNInputParams nnInputParams;
         nnInputParams.playoutDoublingAdvantage =
@@ -1611,6 +1640,14 @@ struct GTPEngine {
           analysisParams.playoutDoublingAdvantage : -analysisParams.playoutDoublingAdvantage;
         nnInputParams.symmetry = symmetry;
         nnInputParams.policyOptimism = policyOptimism;
+        //When evaluating the human model, featurize per its own resolution (which may differ from the
+        //main search's modes carried by the history), matching how in-search human evals featurize.
+        if(useHumanModel) {
+          nnInputParams.passAliveSuicideRulesOverride =
+            Search::resolveAlwaysComputePassAliveUnderSuicideRules(analysisParams, humanEval) ? 1 : 0;
+          nnInputParams.excludeTerritoryAdjAtariOverride =
+            Search::resolveExcludeTerritoryAdjacentToAtari(analysisParams, humanEval) ? 1 : 0;
+        }
         NNResultBuf buf;
         bool skipCache = true;
         bool includeOwnerMap = true;
@@ -1889,6 +1926,71 @@ static GTPEngine::AnalyzeArgs parseAnalyzeCommand(
   args.avoidMoveUntilByLocBlack = avoidMoveUntilByLocBlack;
   args.avoidMoveUntilByLocWhite = avoidMoveUntilByLocWhite;
   return args;
+}
+
+//Parse args for kata-raw-nn / kata-raw-human-nn: an optional leading player color ("b"/"w"/"black"/"white"),
+//a required symmetry ("all" or an index 0-7), and (if allowOptimism) an optional trailing policy optimism value
+//in [0,1]. This is positional and mirrors the optional-player convention used by the analyze commands (see
+//parseAnalyzeCommand): a color, if present, must come first, and the optimism, if present, must come last.
+//'pla' and 'policyOptimism' should be pre-filled with defaults; each is overwritten only if its argument is given.
+//Returns false and fills 'error' on any missing, extra, or unparseable argument.
+//Note: only "b"/"w"/"black"/"white" parse as a player (see PlayerIO::tryParsePlayer). An integer never parses as a
+//player, so a bare symmetry index such as "kata-raw-nn 3" is unambiguously the symmetry, exactly as before.
+static bool parseRawNNArgs(
+  const vector<string>& pieces,
+  bool allowOptimism,
+  Player& pla,
+  int& whichSymmetry,
+  double& policyOptimism,
+  string& error
+) {
+  size_t idx = 0;
+
+  //Optional leading player color.
+  Player parsedPla;
+  if(idx < pieces.size() && PlayerIO::tryParsePlayer(Global::trim(Global::toLower(pieces[idx])),parsedPla)) {
+    pla = parsedPla;
+    idx += 1;
+  }
+
+  //Required symmetry.
+  if(idx >= pieces.size()) {
+    error = "Expected a symmetry argument 'all' or index [0-7]";
+    return false;
+  }
+  {
+    string s = Global::trim(Global::toLower(pieces[idx]));
+    int parsedSym;
+    if(s == "all")
+      whichSymmetry = NNInputs::SYMMETRY_ALL;
+    else if(Global::tryStringToInt(s,parsedSym) && parsedSym >= 0 && parsedSym <= SymmetryHelpers::NUM_SYMMETRIES-1)
+      whichSymmetry = parsedSym;
+    else {
+      error = "Expected a symmetry argument 'all' or index [0-7] but got '" + pieces[idx] + "'";
+      return false;
+    }
+    idx += 1;
+  }
+
+  //Optional trailing policy optimism in [0,1].
+  if(allowOptimism && idx < pieces.size()) {
+    double parsedOpt;
+    if(Global::tryStringToDouble(pieces[idx],parsedOpt) && !isnan(parsedOpt) && parsedOpt >= 0.0 && parsedOpt <= 1.0) {
+      policyOptimism = parsedOpt;
+      idx += 1;
+    }
+    else {
+      error = "Expected an optimism value in [0,1] but got '" + pieces[idx] + "'";
+      return false;
+    }
+  }
+
+  //No further arguments allowed.
+  if(idx < pieces.size()) {
+    error = "Unexpected extra argument '" + pieces[idx] + "'";
+    return false;
+  }
+  return true;
 }
 
 
@@ -2649,8 +2751,15 @@ int MainCmds::gtp(const vector<string>& args) {
 
           SearchParams::failIfParamsDifferOnUnchangeableParameter(initialGenmoveParams,genmoveParams);
           SearchParams::failIfParamsDifferOnUnchangeableParameter(initialAnalysisParams,analysisParams);
+          BoardHistoryModes oldHistoryModes = Search::resolveHistoryModes(engine->getGenmoveParams(),engine->nnEval);
           engine->setGenmoveParamsIfChanged(genmoveParams);
           engine->setAnalysisParamsIfChanged(analysisParams);
+          //If the params change flipped any resolved BoardHistoryModes flag, re-replay the game
+          //so all recorded game state is recomputed under the new modes (re-stamping alone does not
+          //re-adjudicate). Done after both param sets are updated so the replay runs under the new modes.
+          BoardHistoryModes newHistoryModes = Search::resolveHistoryModes(engine->getGenmoveParams(),engine->nnEval);
+          if(newHistoryModes != oldHistoryModes)
+            engine->rereplayGameForHistoryModesChange();
           staticPDATakesPrecedence = cfg.contains("playoutDoublingAdvantage") && !cfg.contains("dynamicPlayoutDoublingAdvantageCapPerOppLead");
           engine->staticPDATakesPrecedence = staticPDATakesPrecedence;
           allowResignation = desiredAllowResignation;
@@ -3204,7 +3313,7 @@ int MainCmds::gtp(const vector<string>& args) {
         else {
           maybeSaveAvoidPatterns(false);
           Player pla = P_WHITE;
-          BoardHistory hist(board,pla,engine->getCurrentRules(),0);
+          BoardHistory hist(board,pla,engine->getCurrentRules(),0,Search::resolveHistoryModes(engine->getGenmoveParams(),engine->nnEval));
           hist.setInitialTurnNumber(board.numStonesOnBoard()); //Should give more accurate temperaure and time control behavior
           vector<Move> newMoveHistory;
           engine->setPositionAndRules(pla,board,hist,board,pla,newMoveHistory);
@@ -3359,7 +3468,13 @@ int MainCmds::gtp(const vector<string>& args) {
               }
             }
 
-            sgf->setupInitialBoardAndHist(sgfRules, sgfInitialBoard, sgfInitialNextPla, sgfInitialHist);
+            //Set up with the BoardHistoryModes the bot will be using BEFORE replaying the
+            //moves, so that any game-end adjudication happening during the replay matches what the
+            //same moves would give if entered via play commands on the bot's own history.
+            sgf->setupInitialBoardAndHist(
+              sgfRules, sgfInitialBoard, sgfInitialNextPla, sgfInitialHist,
+              Search::resolveHistoryModes(engine->getGenmoveParams(), engine->nnEval)
+            );
             sgfInitialHist.setInitialTurnNumber(sgfInitialBoard.numStonesOnBoard()); //Should give more accurate temperaure and time control behavior
             sgfBoard = sgfInitialBoard;
             sgfNextPla = sgfInitialNextPla;
@@ -3456,50 +3571,29 @@ int MainCmds::gtp(const vector<string>& args) {
 
     else if(command == "kata-raw-nn") {
       int whichSymmetry = NNInputs::SYMMETRY_ALL;
-      bool parsed = false;
-      if(pieces.size() == 1 || pieces.size() == 2) {
-        string s = Global::trim(Global::toLower(pieces[0]));
-        if(s == "all")
-          parsed = true;
-        else if(Global::tryStringToInt(s,whichSymmetry) && whichSymmetry >= 0 && whichSymmetry <= SymmetryHelpers::NUM_SYMMETRIES-1)
-          parsed = true;
-      }
+      Player pla = engine->bot->getRootPla();
+      double policyOptimism = engine->getGenmoveParams().rootPolicyOptimism;
+      string error;
+      bool parsed = parseRawNNArgs(pieces, true, pla, whichSymmetry, policyOptimism, error);
       if(!parsed) {
         responseIsError = true;
-        response = "Expected one argument 'all' or symmetry index [0-7] for kata-raw-nn but got '" + Global::concat(pieces," ") + "'";
+        response = error + " for kata-raw-nn (expected an optional color, a symmetry 'all' or index [0-7], and an optional optimism [0-1])";
       }
       else {
-        double policyOptimism = engine->getGenmoveParams().rootPolicyOptimism;
-        if(pieces.size() == 2) {
-          parsed = false;
-          if(Global::tryStringToDouble(pieces[0],policyOptimism) && isnan(policyOptimism) && policyOptimism >= 0.0 && policyOptimism <= 1.0) {
-            parsed = true;
-          }
-        }
-        if(!parsed) {
-          responseIsError = true;
-          response = "Expected double from 0 to 1 for optimism but got '" + Global::concat(pieces," ") + "'";
-        }
-        else {
-          const bool useHumanModel = false;
-          response = engine->rawNN(whichSymmetry, policyOptimism, useHumanModel);
-        }
+        const bool useHumanModel = false;
+        response = engine->rawNN(whichSymmetry, policyOptimism, useHumanModel, pla);
       }
     }
 
     else if(command == "kata-raw-human-nn") {
       int whichSymmetry = NNInputs::SYMMETRY_ALL;
-      bool parsed = false;
-      if(pieces.size() == 1) {
-        string s = Global::trim(Global::toLower(pieces[0]));
-        if(s == "all")
-          parsed = true;
-        else if(Global::tryStringToInt(s,whichSymmetry) && whichSymmetry >= 0 && whichSymmetry <= SymmetryHelpers::NUM_SYMMETRIES-1)
-          parsed = true;
-      }
+      Player pla = engine->bot->getRootPla();
+      double policyOptimism = engine->getGenmoveParams().rootPolicyOptimism;
+      string error;
+      bool parsed = parseRawNNArgs(pieces, false, pla, whichSymmetry, policyOptimism, error);
       if(!parsed) {
         responseIsError = true;
-        response = "Expected one argument 'all' or symmetry index [0-7] for kata-raw-human-nn but got '" + Global::concat(pieces," ") + "'";
+        response = error + " for kata-raw-human-nn (expected an optional color followed by a symmetry 'all' or index [0-7])";
       }
       else {
         if(engine->humanEval == NULL) {
@@ -3511,9 +3605,8 @@ int MainCmds::gtp(const vector<string>& args) {
           response = "Cannot run kata-raw-human-nn, humanSLProfile parameter was not set";
         }
         else {
-          double policyOptimism = engine->getGenmoveParams().rootPolicyOptimism;
           const bool useHumanModel = true;
-          response = engine->rawNN(whichSymmetry, policyOptimism, useHumanModel);
+          response = engine->rawNN(whichSymmetry, policyOptimism, useHumanModel, pla);
         }
       }
     }

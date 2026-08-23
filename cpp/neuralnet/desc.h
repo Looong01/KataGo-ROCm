@@ -36,6 +36,8 @@ struct ConvLayerDesc {
   int64_t getNumParameters() const;
 
   void scaleOutputChannels(const std::vector<float>& scaling);
+
+  void releaseWeights();
 };
 
 struct BatchNormLayerDesc {
@@ -68,6 +70,8 @@ struct BatchNormLayerDesc {
   void extractChannelFactorsAbsLtOne(std::vector<float>& channelFactors);
   void extractChannelFactorsAbsLtOneWithInverses(std::vector<float>& channelFactors, std::vector<float>& invChannelFactors);
   void applyScale8ToReduceActivations();
+
+  void releaseWeights();
 };
 
 struct ActivationLayerDesc {
@@ -105,6 +109,8 @@ struct MatMulLayerDesc {
   int64_t getNumParameters() const;
 
   void scaleOutputChannels(const std::vector<float>& scaling);
+
+  void releaseWeights();
 };
 
 struct MatBiasLayerDesc {
@@ -124,6 +130,8 @@ struct MatBiasLayerDesc {
   int64_t getNumParameters() const;
 
   void applyScale8ToReduceActivations();
+
+  void releaseWeights();
 };
 
 struct ResidualBlockDesc {
@@ -150,6 +158,8 @@ struct ResidualBlockDesc {
 
   void transformToReduceActivations();
   void applyScale8ToReduceActivations();
+
+  void releaseWeights();
 };
 
 struct GlobalPoolingResidualBlockDesc {
@@ -181,6 +191,8 @@ struct GlobalPoolingResidualBlockDesc {
 
   void transformToReduceActivations();
   void applyScale8ToReduceActivations();
+
+  void releaseWeights();
 };
 
 struct NestedBottleneckResidualBlockDesc {
@@ -215,6 +227,8 @@ struct NestedBottleneckResidualBlockDesc {
 
   void transformToReduceActivations();
   void applyScale8ToReduceActivations();
+
+  void releaseWeights();
 };
 
 // Trunk final normalization kind (stored in trunk header)
@@ -240,6 +254,7 @@ struct RMSNormLayerDesc {
   RMSNormLayerDesc& operator=(RMSNormLayerDesc&& other);
 
   int64_t getNumParameters() const;
+  void releaseWeights();
 };
 
 // Lightweight RMSNorm used inside transformer blocks (weight only, no bias, no spatial modes)
@@ -259,6 +274,7 @@ struct TransformerRMSNormDesc {
   TransformerRMSNormDesc& operator=(TransformerRMSNormDesc&& other);
 
   int64_t getNumParameters() const;
+  void releaseWeights();
 };
 
 struct TransformerAttentionDesc {
@@ -294,6 +310,7 @@ struct TransformerAttentionDesc {
   TransformerAttentionDesc& operator=(TransformerAttentionDesc&& other);
 
   int64_t getNumParameters() const;
+  void releaseWeights();
 
   // Compute cos/sin tables for RoPE given board dimensions.
   // Output tables are indexed as:
@@ -324,6 +341,7 @@ struct TransformerFFNDesc {
   TransformerFFNDesc& operator=(TransformerFFNDesc&& other);
 
   int64_t getNumParameters() const;
+  void releaseWeights();
 };
 
 struct SGFMetadataEncoderDesc {
@@ -349,6 +367,7 @@ struct SGFMetadataEncoderDesc {
   SGFMetadataEncoderDesc& operator=(SGFMetadataEncoderDesc&& other);
 
   int64_t getNumParameters() const;
+  void releaseWeights();
 };
 
 
@@ -397,6 +416,8 @@ struct TrunkDesc {
 
   void transformToReduceActivations();
   void applyScale8ToReduceActivations();
+
+  void releaseWeights();
 };
 
 struct PolicyHeadDesc {
@@ -431,6 +452,8 @@ struct PolicyHeadDesc {
 
   void transformToReduceActivations();
   void applyScale8ToReduceActivations();
+
+  void releaseWeights();
 };
 
 struct ValueHeadDesc {
@@ -463,6 +486,8 @@ struct ValueHeadDesc {
 
   void transformToReduceActivations();
   void applyScale8ToReduceActivations();
+
+  void releaseWeights();
 };
 
 struct ModelPostProcessParams {
@@ -494,11 +519,32 @@ struct ModelDesc {
 
   int metaEncoderVersion;
 
+  //True if the model expects its pass-alive area input features to be computed as if
+  //multi-stone suicide were always legal, regardless of the actual suicide rule.
+  bool preferPassAliveUnderSuicideRules;
+
+  //True if the model expects territory scoring with TaxRule NONE (both for adjudication and for its
+  //territory input features) to exclude empty points adjacent to chains in atari, per rules version 3.
+  bool preferExcludeTerritoryAdjacentToAtari;
+
   ModelPostProcessParams postProcessParams;
 
   TrunkDesc trunk;
   PolicyHeadDesc policyHead;
   ValueHeadDesc valueHead;
+
+  //Architecture summary values that are normally derived by walking trunk/policyHead/valueHead.
+  //Set (present = true) only for a desc reconstructed from a .onnx file, which has no layer
+  //structure to walk; the summary getters below then report these values instead.
+  struct ArchSummary {
+    bool present;
+    double trunkSpatialConvDepth;
+    int64_t numParameters;
+    bool hasAnyTransformerBlocks;
+    bool hasAnyNestedBottleneckBlocks;
+    ArchSummary();
+  };
+  ArchSummary archSummary;
 
   ModelDesc();
   ~ModelDesc();
@@ -518,21 +564,35 @@ struct ModelDesc {
   //True if the model's trunk contains any transformer (attention or ffn) block. Useful for callers
   //that want to report model stats or special-case transformer-only behavior (e.g. graph warmup).
   bool hasAnyTransformerBlocks() const;
+  bool hasAnyNestedBottleneckBlocks() const;
 
   //Short human-readable summary of the model architecture kind and parameter count, e.g.
   //"nbt transformer, 12345678 params". Backends can append this in parentheses after the model name.
   std::string getShortInfoString() const;
 
   void transformToReduceActivations();
-  void applyScale8ToReduceActivations();
+  //Rescales the net's activations by 1/8 to keep them inside the FP16 range, compensating via
+  //postProcessParams.outputScaleMultiplier. Returns whether it was applied: for models where the
+  //rescaling would be unsound it changes nothing and returns false.
+  bool applyScale8ToReduceActivations();
 
   //Loads a model from a file that may or may not be gzipped, storing it in descBuf
   //If expectedSha256 is nonempty, will also verify sha256 of the loaded data.
   static void loadFromFileMaybeGZipped(const std::string& fileName, ModelDesc& descBuf, const std::string& expectedSha256);
 
+  //Throws StringError if name is not usable as a model name. Model names get embedded into on-disk
+  //cache filenames (e.g. the TensorRT plan cache), so they are restricted to a short
+  //filesystem-safe character set.
+  static void checkNameValid(const std::string& name);
+
   //Return the "nearest" supported ruleset to desiredRules by this model.
   //Fills supported with true if desiredRules itself was exactly supported, false if some modifications had to be made.
   Rules getSupportedRules(const Rules& desiredRules, bool& supported) const;
+
+  // Frees all weight arrays (conv/matmul/bias/batchnorm), keeping scalar shape
+  // metadata intact. Safe once weights are no longer needed (e.g. CoreML/ANE
+  // inference, which reads weights from the compiled .mlmodelc).
+  void releaseWeights();
 
 };
 

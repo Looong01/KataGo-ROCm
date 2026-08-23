@@ -2392,6 +2392,7 @@ struct TransformerAttentionKernelSet {
       int blockKV = handle->tuneParams.transformer.ATTN_BLOCK_KV;
       compileOpts += " -DATTN_BLOCK_Q=" + Global::intToString(attnBlockQ);
       compileOpts += " -DATTN_BLOCK_KV=" + Global::intToString(blockKV);
+      compileOpts += " -DQ_PER_THREAD=" + Global::intToString(handle->tuneParams.transformer.Q_PER_THREAD);
       program = OpenCLHelpers::compileProgram(
         "transformerAttentionProgram", handle->clContext, deviceIdsToUse,
         OpenCLKernels::transformerScaledDotProductAttention,
@@ -3828,6 +3829,22 @@ void NeuralNet::printDevices() {
       " (score " + Global::intToString(device.defaultDesirability) + ")";
     cout << msg << endl;
   }
+}
+
+std::string NeuralNet::getRuntimeBackendDetail(ConfigParser& cfg) {
+  (void)cfg;
+  return std::string();
+}
+
+NeuralNet::BatchPolicy NeuralNet::getBatchPolicy(ConfigParser& cfg) {
+  (void)cfg;
+  return NeuralNet::BatchPolicy::Dynamic;
+}
+
+int NeuralNet::getNumEffectiveDevices(ConfigParser& cfg, const std::vector<int>& gpuIdxByServerThread) {
+  (void)cfg;
+  std::set<int> distinctDevices(gpuIdxByServerThread.begin(), gpuIdxByServerThread.end());
+  return std::max(1, (int)distinctDevices.size());
 }
 
 //--------------------------------------------------------------

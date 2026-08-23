@@ -574,6 +574,9 @@ string GTPConfig::makeConfig(
       if(winmlProviderSupportsThreadDeviceMap)
         replacement += "winmlDeviceToUseThread" + Global::intToString(i) + " = " + Global::intToString(deviceIdxs[i]) + "\n";
 #endif
+#ifdef USE_ROCM_BACKEND
+      replacement += "rocmDeviceToUseThread" + Global::intToString(i) + " = " + Global::intToString(deviceIdxs[i]) + "\n";
+#endif
     }
 #ifdef USE_ONNX_BACKEND
     if(!onnxProviderSupportsThreadDeviceMap) {

@@ -3,6 +3,7 @@
 #include "../core/fileutils.h"
 #include "../core/makedir.h"
 #include "../core/config_parser.h"
+#include "../core/timer.h"
 #include "../dataio/sgf.h"
 #include "../dataio/trainingwrite.h"
 #include "../dataio/loadmodel.h"
@@ -128,6 +129,9 @@ int MainCmds::selfplay(const vector<string>& args) {
   if(!logger.isLoggingToStdout())
     cout << "Loaded all config stuff, starting self play" << endl;
 
+  //Time the whole self-play run for reporting overall computational throughput.
+  ClockTimer selfplayTimer;
+
   if(!std::atomic_is_lock_free(&shouldStop))
     throw StringError("shouldStop is not lock free, signal-quitting mechanism for terminating matches will NOT work!");
   std::signal(SIGINT, signalHandler);
@@ -158,14 +162,13 @@ int MainCmds::selfplay(const vector<string>& args) {
 
     const int expectedConcurrentEvals = cfg.getInt("numSearchThreads") * numGameThreads;
     const bool defaultRequireExactNNLen = minBoardXSizeUsed == maxBoardXSizeUsed && minBoardYSizeUsed == maxBoardYSizeUsed;
-    const int defaultMaxBatchSize = -1;
     const bool disableFP16 = false;
     const string expectedSha256 = "";
 
     Rand rand;
      NNEvaluator* nnEval = Setup::initializeNNEvaluator(
       modelName,modelFile,expectedSha256,cfg,logger,rand,expectedConcurrentEvals,
-      maxBoardXSizeUsed,maxBoardYSizeUsed,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+      maxBoardXSizeUsed,maxBoardYSizeUsed,Setup::MaxBatchSizeRequest::requireFromConfig(),defaultRequireExactNNLen,disableFP16,
       Setup::SETUP_FOR_OTHER
     );
     logger.write("Loaded latest neural net " + modelName + " from: " + modelFile);
@@ -379,6 +382,10 @@ int MainCmds::selfplay(const vector<string>& args) {
 
   //At this point, nothing else except possibly data write loops are running, within the selfplay manager.
   delete manager;
+
+  //Overall self-play totals (per-model NN/data/moves breakdowns are logged above by the manager).
+  logger.write("Total games: " + Global::int64ToString(numGamesStarted.load(std::memory_order_relaxed)));
+  logger.write("Total selfplay runtime (seconds): " + Global::doubleToString(selfplayTimer.getSeconds()));
 
   //Delete and clean up everything else
   NeuralNet::globalCleanup();

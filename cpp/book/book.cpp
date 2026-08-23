@@ -145,7 +145,8 @@ void BookHash::getHashAndSymmetry(const BoardHistory& hist, int repBound, BookHa
 
   for(int symmetry = 0; symmetry < numSymmetries; symmetry++) {
     boardsBySym[symmetry] = SymmetryHelpers::getSymBoard(hist.initialBoard,symmetry);
-    histsBySym[symmetry] = BoardHistory(boardsBySym[symmetry], hist.initialPla, hist.rules, hist.initialEncorePhase);
+    //Replay and hash under the same BoardHistoryModes as the history we're hashing.
+    histsBySym[symmetry] = BoardHistory(boardsBySym[symmetry], hist.initialPla, hist.rules, hist.initialEncorePhase, hist.modes);
     accums[symmetry] = Hash128();
   }
 
@@ -860,12 +861,14 @@ Book::Book(
   const Rules& r,
   Player p,
   int rb,
+  const BoardHistoryModes& hModes,
   BookParams bp
 ) : bookVersion(bversion),
     initialBoard(b),
     initialRules(r),
     initialPla(p),
     repBound(rb),
+    historyModes(hModes),
     params(bp),
     initialSymmetry(0),
     root(nullptr),
@@ -873,6 +876,20 @@ Book::Book(
     nodeIdxMapsByHash(nullptr),
     nextVisitedDoneValue(1)
 {
+  //Older binaries silently mis-hash flagged books rather than erroring, so a book flagged with a
+  //mode must use at least the version that introduced that mode, which those binaries reject.
+  //See comment on LATEST_BOOK_VERSION.
+  if(historyModes.alwaysComputePassAliveUnderSuicideRules && bookVersion < 3)
+    throw StringError(
+      "Books with alwaysComputePassAliveUnderSuicideRules=true require book version >= 3, got version " +
+      Global::intToString(bookVersion)
+    );
+  if(historyModes.excludeTerritoryAdjacentToAtari && bookVersion < 4)
+    throw StringError(
+      "Books with excludeTerritoryAdjacentToAtari=true require book version >= 4, got version " +
+      Global::intToString(bookVersion)
+    );
+
   nodeIdxMapsByHash = new std::map<BookHash,int64_t>[NUM_HASH_BUCKETS];
 
   BookHash rootHash;
@@ -880,7 +897,7 @@ Book::Book(
   vector<int> rootSymmetries;
 
   int initialEncorePhase = 0;
-  BoardHistory initialHist(initialBoard, initialPla, initialRules, initialEncorePhase);
+  BoardHistory initialHist(initialBoard, initialPla, initialRules, initialEncorePhase, historyModes);
   BookHash::getHashAndSymmetry(initialHist, repBound, rootHash, symmetryToAlign, rootSymmetries, bookVersion);
 
   initialSymmetry = symmetryToAlign;
@@ -900,7 +917,7 @@ BoardHistory Book::getInitialHist() const {
 }
 BoardHistory Book::getInitialHist(int symmetry) const {
   int initialEncorePhase = 0;
-  return BoardHistory(SymmetryHelpers::getSymBoard(initialBoard,symmetry), initialPla, initialRules, initialEncorePhase);
+  return BoardHistory(SymmetryHelpers::getSymBoard(initialBoard,symmetry), initialPla, initialRules, initialEncorePhase, historyModes);
 }
 
 size_t Book::size() const {
@@ -2990,7 +3007,15 @@ void Book::saveToFile(const string& fileName) const {
   string tmpFileName = fileName + ".tmp";
   std::ofstream out;
   FileUtils::open(out, tmpFileName);
+  saveToStream(out);
+  out.close();
 
+  // Just in case, avoid any possible racing for file system
+  std::this_thread::sleep_for(std::chrono::duration<double>(1));
+  FileUtils::rename(tmpFileName,fileName);
+}
+
+void Book::saveToStream(std::ostream& out) const {
   {
     json paramsDump;
     paramsDump["version"] = bookVersion;
@@ -2998,6 +3023,8 @@ void Book::saveToFile(const string& fileName) const {
     paramsDump["initialRules"] = initialRules.toJson();
     paramsDump["initialPla"] = PlayerIO::playerToString(initialPla);
     paramsDump["repBound"] = repBound;
+    paramsDump["alwaysComputePassAliveUnderSuicideRules"] = historyModes.alwaysComputePassAliveUnderSuicideRules;
+    paramsDump["excludeTerritoryAdjacentToAtari"] = historyModes.excludeTerritoryAdjacentToAtari;
     paramsDump["errorFactor"] = params.errorFactor;
     paramsDump["costPerMove"] = params.costPerMove;
     paramsDump["costPerUCBWinLossLoss"] = params.costPerUCBWinLossLoss;
@@ -3125,16 +3152,44 @@ void Book::saveToFile(const string& fileName) const {
     out << nodeData << "\n";
   }
   out << std::flush;
-  out.close();
+}
 
-  // Just in case, avoid any possible racing for file system
-  std::this_thread::sleep_for(std::chrono::duration<double>(1));
-  FileUtils::rename(tmpFileName,fileName);
+BoardHistoryModes Book::readHistoryModesOfFileHeader(const std::string& fileName) {
+  std::ifstream in;
+  FileUtils::open(in, fileName);
+  try {
+    return readHistoryModesOfHeader(in);
+  }
+  catch(const std::exception& e) {
+    throw IOError("When parsing book file " + fileName + ": " + e.what());
+  }
+}
+
+BoardHistoryModes Book::readHistoryModesOfHeader(std::istream& in) {
+  std::string line;
+  getline(in,line);
+  if(!in)
+    throw IOError("Could not load initial metadata line from book data");
+  json params = json::parse(line);
+  BoardHistoryModes modes;
+  if(params.contains("alwaysComputePassAliveUnderSuicideRules"))
+    modes.alwaysComputePassAliveUnderSuicideRules = params["alwaysComputePassAliveUnderSuicideRules"].get<bool>();
+  if(params.contains("excludeTerritoryAdjacentToAtari"))
+    modes.excludeTerritoryAdjacentToAtari = params["excludeTerritoryAdjacentToAtari"].get<bool>();
+  return modes;
 }
 
 Book* Book::loadFromFile(const std::string& fileName, int numThreadsForRecompute) {
   std::ifstream in;
   FileUtils::open(in, fileName);
+  return loadFromStreamHelper(in, numThreadsForRecompute, "book file " + fileName);
+}
+
+Book* Book::loadFromStream(std::istream& in, int numThreadsForRecompute) {
+  return loadFromStreamHelper(in, numThreadsForRecompute, "book data");
+}
+
+Book* Book::loadFromStreamHelper(std::istream& in, int numThreadsForRecompute, const std::string& sourceDesc) {
   std::string line;
   Book* ret = NULL;
   try {
@@ -3151,7 +3206,7 @@ Book* Book::loadFromFile(const std::string& fileName, int numThreadsForRecompute
       json params = json::parse(line);
       assertContains(params,"version");
       int bookVersion = params["version"].get<int>();
-      if(bookVersion != 1 && bookVersion != 2)
+      if(bookVersion != 1 && bookVersion != 2 && bookVersion != 3 && bookVersion != 4)
         throw IOError("Unsupported book version: " + Global::intToString(bookVersion));
 
       assertContains(params,"initialBoard");
@@ -3194,12 +3249,20 @@ Book* Book::loadFromFile(const std::string& fileName, int numThreadsForRecompute
       bookParams.visitsScaleLeaves = params.contains("visitsScaleLeaves") ? params["visitsScaleLeaves"].get<double>() : 1.0;
       bookParams.sharpScoreOutlierCap = params.contains("sharpScoreOutlierCap") ? params["sharpScoreOutlierCap"].get<double>() : 10000.0;
 
+      //Absent flags in older book files = false
+      BoardHistoryModes historyModes;
+      historyModes.alwaysComputePassAliveUnderSuicideRules =
+        params.contains("alwaysComputePassAliveUnderSuicideRules") ? params["alwaysComputePassAliveUnderSuicideRules"].get<bool>() : false;
+      historyModes.excludeTerritoryAdjacentToAtari =
+        params.contains("excludeTerritoryAdjacentToAtari") ? params["excludeTerritoryAdjacentToAtari"].get<bool>() : false;
+
       book = std::make_unique<Book>(
         bookVersion,
         initialBoard,
         initialRules,
         initialPla,
         repBound,
+        historyModes,
         bookParams
       );
 
@@ -3338,7 +3401,7 @@ Book* Book::loadFromFile(const std::string& fileName, int numThreadsForRecompute
     ret = book.release();
   }
   catch(const std::exception& e) {
-    throw IOError("When parsing book file " + fileName + ": " + e.what() + "\nFurthest line read was:\n" + line.substr(0,10000));
+    throw IOError("When parsing " + sourceDesc + ": " + e.what() + "\nFurthest line read was:\n" + line.substr(0,10000));
   }
   return ret;
 }

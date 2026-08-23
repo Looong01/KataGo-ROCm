@@ -363,6 +363,9 @@ class Book {
   const Rules initialRules;
   const Player initialPla;
   const int repBound;
+  //The BoardHistoryModes under which all histories and hashes of this book are computed.
+  //Recorded in the book file per-flag (absent flags = false).
+  const BoardHistoryModes historyModes;
 
  private:
   BookParams params;
@@ -384,11 +387,25 @@ class Book {
     const Rules& rules,
     Player initialPla,
     int repBound,
+    const BoardHistoryModes& historyModes,
     BookParams params
   );
   ~Book();
 
-  static constexpr int LATEST_BOOK_VERSION = 2;
+  //Reads just the metadata header of a saved book file to get its recorded BoardHistoryModes
+  //without loading the whole book. Absent keys (older book files) = false.
+  static BoardHistoryModes readHistoryModesOfFileHeader(const std::string& fileName);
+  static BoardHistoryModes readHistoryModesOfHeader(std::istream& in);
+
+  //Versions 3 and 4 are identical to version 2 in format and hashing, except that version 3 may
+  //record alwaysComputePassAliveUnderSuicideRules=true and version 4 may additionally record
+  //excludeTerritoryAdjacentToAtari=true. A book flagged with a mode requires at least the version
+  //that introduced that mode, so that older binaries reject it cleanly ("Unsupported book version")
+  //instead of ignoring the unrecognized flag in the header and silently mis-hashing the book into a
+  //disconnected mess. Each new mode therefore needs its own version bump.
+  //All new books are written as the latest version, so new book files require this version of
+  //KataGo or later to load, whether flagged or not.
+  static constexpr int LATEST_BOOK_VERSION = 4;
 
   Book(const Book&) = delete;
   Book& operator=(const Book&) = delete;
@@ -485,9 +502,12 @@ class Book {
   );
 
   void saveToFile(const std::string& fileName) const;
+  void saveToStream(std::ostream& out) const;
   static Book* loadFromFile(const std::string& fileName, int numThreadsForRecompute=1);
+  static Book* loadFromStream(std::istream& in, int numThreadsForRecompute=1);
 
  private:
+  static Book* loadFromStreamHelper(std::istream& in, int numThreadsForRecompute, const std::string& sourceDesc);
   int64_t getIdx(const BookHash& hash) const;
   BookNode* get(const BookHash& hash);
   const BookNode* get(const BookHash& hash) const;

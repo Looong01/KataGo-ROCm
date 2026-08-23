@@ -870,7 +870,12 @@ Hash128 NNInputs::getHash(
   const Board& board, const BoardHistory& hist, Player nextPlayer,
   const MiscNNInputParams& nnInputParams
 ) {
-  Hash128 hash = BoardHistory::getSituationRulesAndKoHash(board, hist, nextPlayer, nnInputParams.drawEquivalentWinsForWhite);
+  //Hash using the effective BoardHistoryModes for this eval, which are normally hist's own
+  //but may be overridden per-query (e.g. for a secondary net whose declared featurization differs).
+  Hash128 hash = BoardHistory::getSituationRulesAndKoHash(
+    board, hist, nextPlayer, nnInputParams.drawEquivalentWinsForWhite,
+    nnInputParams.getModes(hist)
+  );
 
   //Fold in whether a pass ends this phase.
   if(hist.passWouldEndPhase(board,nextPlayer)) {
@@ -935,6 +940,29 @@ Hash128 NNInputs::getHash(
   }
 
   return hash;
+}
+
+bool MiscNNInputParams::getAlwaysComputePassAliveUnderSuicideRules(const BoardHistory& hist) const {
+  if(passAliveSuicideRulesOverride >= 0)
+    return passAliveSuicideRulesOverride != 0;
+  return hist.modes.alwaysComputePassAliveUnderSuicideRules;
+}
+
+bool MiscNNInputParams::getExcludeTerritoryAdjacentToAtari(const BoardHistory& hist) const {
+  if(excludeTerritoryAdjAtariOverride >= 0)
+    return excludeTerritoryAdjAtariOverride != 0;
+  return hist.modes.excludeTerritoryAdjacentToAtari;
+}
+
+BoardHistoryModes MiscNNInputParams::getModes(const BoardHistory& hist) const {
+  return BoardHistoryModes(
+    getAlwaysComputePassAliveUnderSuicideRules(hist),
+    getExcludeTerritoryAdjacentToAtari(hist)
+  );
+}
+
+bool MiscNNInputParams::getSuicideLegalForPassAlive(const BoardHistory& hist) const {
+  return hist.rules.multiStoneSuicideLegal || getAlwaysComputePassAliveUnderSuicideRules(hist);
 }
 
 //===========================================================================================
@@ -1145,7 +1173,7 @@ void NNInputs::fillRowV3(
   else {
     ASSERT_UNREACHABLE;
   }
-  board.calculateArea(area,nonPassAliveStones,safeBigTerritories,unsafeBigTerritories,hist.rules.multiStoneSuicideLegal);
+  board.calculateArea(area,nonPassAliveStones,safeBigTerritories,unsafeBigTerritories,nnInputParams.getSuicideLegalForPassAlive(hist));
 
   for(int y = 0; y<ySize; y++) {
     for(int x = 0; x<xSize; x++) {
@@ -1483,7 +1511,7 @@ void NNInputs::fillRowV4(
     bool nonPassAliveStones = false;
     bool safeBigTerritories = true;
     bool unsafeBigTerritories = false;
-    board.calculateArea(area,nonPassAliveStones,safeBigTerritories,unsafeBigTerritories,hist.rules.multiStoneSuicideLegal);
+    board.calculateArea(area,nonPassAliveStones,safeBigTerritories,unsafeBigTerritories,nnInputParams.getSuicideLegalForPassAlive(hist));
   }
 
   for(int y = 0; y<ySize; y++) {
@@ -1926,7 +1954,7 @@ void NNInputs::fillRowV6(
     bool nonPassAliveStones = true;
     bool safeBigTerritories = true;
     bool unsafeBigTerritories = true;
-    board.calculateArea(area,nonPassAliveStones,safeBigTerritories,unsafeBigTerritories,hist.rules.multiStoneSuicideLegal);
+    board.calculateArea(area,nonPassAliveStones,safeBigTerritories,unsafeBigTerritories,nnInputParams.getSuicideLegalForPassAlive(hist));
   }
   else {
     bool keepTerritories = false;
@@ -1962,7 +1990,8 @@ void NNInputs::fillRowV6(
         area,whiteMinusBlackIndependentLifeRegionCount,
         keepTerritories,
         keepStones,
-        hist.rules.multiStoneSuicideLegal
+        nnInputParams.getExcludeTerritoryAdjacentToAtari(hist),
+        nnInputParams.getSuicideLegalForPassAlive(hist)
       );
       if(hist.rules.taxRule == Rules::TAX_ALL)
         groupTaxAdjustmentForPla = pla == P_WHITE ? -2 * whiteMinusBlackIndependentLifeRegionCount : 2 * whiteMinusBlackIndependentLifeRegionCount;
@@ -2364,7 +2393,7 @@ void NNInputs::fillRowV7(
     bool nonPassAliveStones = true;
     bool safeBigTerritories = true;
     bool unsafeBigTerritories = true;
-    board.calculateArea(area,nonPassAliveStones,safeBigTerritories,unsafeBigTerritories,hist.rules.multiStoneSuicideLegal);
+    board.calculateArea(area,nonPassAliveStones,safeBigTerritories,unsafeBigTerritories,nnInputParams.getSuicideLegalForPassAlive(hist));
   }
   else {
     bool keepTerritories = false;
@@ -2401,7 +2430,8 @@ void NNInputs::fillRowV7(
         whiteMinusBlackIndependentLifeRegionCount,
         keepTerritories,
         keepStones,
-        hist.rules.multiStoneSuicideLegal
+        nnInputParams.getExcludeTerritoryAdjacentToAtari(hist),
+        nnInputParams.getSuicideLegalForPassAlive(hist)
       );
       if(hist.rules.taxRule == Rules::TAX_ALL)
         groupTaxAdjustmentForPla = pla == P_WHITE ? -2 * whiteMinusBlackIndependentLifeRegionCount : 2 * whiteMinusBlackIndependentLifeRegionCount;
