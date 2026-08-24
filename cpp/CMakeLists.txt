@@ -329,6 +329,80 @@ endfunction()
 # e.g. -DUSE_BACKEND=rocm would otherwise silently skip all the ROCm pre-project setup.
 string(TOUPPER "${USE_BACKEND}" USE_BACKEND)
 
+# WINML compiles with plain cl.exe (like RYZENAI), so no toolset probing is needed - just the
+# vcvarsall environment so that Ninja configure works from an ordinary shell. If the user is
+# already in a Developer Command Prompt (VCToolsInstallDir + INCLUDE set), reuse that; otherwise
+# locate the newest installed MSVC toolset via vswhere and apply its environment.
+if(USE_BACKEND STREQUAL "WINML" AND CMAKE_HOST_WIN32 AND NOT CMAKE_CXX_COMPILER)
+  set(_katago_vctools "$ENV{VCToolsInstallDir}")
+  set(_katago_include "$ENV{INCLUDE}")
+  string(STRIP "${_katago_vctools}" _katago_vctools)
+  string(STRIP "${_katago_include}" _katago_include)
+  if(_katago_vctools STREQUAL "" OR _katago_include STREQUAL "")
+    katago_win_find_vswhere(_katago_vswhere)
+    if(_katago_vswhere)
+      execute_process(
+        COMMAND "${_katago_vswhere}" -all -products * -property installationPath
+        OUTPUT_VARIABLE _katago_vs_raw OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+      string(REPLACE "\r\n" "\n" _katago_vs_raw "${_katago_vs_raw}")
+      string(REPLACE "\n" ";" _katago_vs_paths "${_katago_vs_raw}")
+      set(_katago_best_ver "")
+      set(_katago_best_bat "")
+      foreach(_p IN LISTS _katago_vs_paths)
+        if(_p STREQUAL "")
+          continue()
+        endif()
+        file(TO_CMAKE_PATH "${_p}" _p)
+        if(NOT EXISTS "${_p}/VC/Auxiliary/Build/vcvarsall.bat")
+          continue()
+        endif()
+        # Version comes from the toolset directory name; require its headers to be present so a
+        # partially-installed toolset is not selected. Compare as versions, not strings:
+        # list(SORT) mis-orders 14.9 against 14.40.
+        file(GLOB _katago_tool_dirs "${_p}/VC/Tools/MSVC/*")
+        foreach(_t IN LISTS _katago_tool_dirs)
+          if(IS_DIRECTORY "${_t}" AND EXISTS "${_t}/include/cmath")
+            get_filename_component(_ver "${_t}" NAME)
+            if(_ver MATCHES "^[0-9]+\\.[0-9]+"
+               AND (_katago_best_ver STREQUAL "" OR _ver VERSION_GREATER _katago_best_ver))
+              set(_katago_best_ver "${_ver}")
+              set(_katago_best_bat "${_p}/VC/Auxiliary/Build/vcvarsall.bat")
+            endif()
+          endif()
+        endforeach()
+      endforeach()
+      if(_katago_best_ver STREQUAL "")
+        message(WARNING "KataGo: no Visual Studio C++ toolchain found via vswhere. Install the "
+                        "\"Desktop development with C++\" workload, or configure from a Developer "
+                        "Command Prompt.")
+      else()
+        katago_win_apply_vcvarsall("${_katago_best_bat}" "${_katago_best_ver}")
+        message(STATUS "KataGo: using MSVC toolset ${_katago_best_ver} (found via vswhere)")
+        # The environment applied above lasts only for this configure run. A later, separate
+        # `ninja` is a sibling process that inherits none of it, so cl.exe would be found by its
+        # baked-in full path and then fail on <algorithm>. Bake the resolved INCLUDE/LIB into
+        # flags after project().
+        katago_win_pathlist_to_flags("$ENV{INCLUDE}" "/I" _katago_msvc_incflags)
+        katago_win_pathlist_to_flags("$ENV{LIB}" "/LIBPATH:" _katago_msvc_libflags)
+        # Visual Studio bundles Ninja, but only on the IDE's private PATH.
+        if(CMAKE_GENERATOR MATCHES "Ninja" AND NOT CMAKE_MAKE_PROGRAM)
+          find_program(_katago_ninja ninja)
+          if(NOT _katago_ninja)
+            get_filename_component(_katago_vs_root "${_katago_best_bat}" DIRECTORY)
+            get_filename_component(_katago_vs_root "${_katago_vs_root}/../../.." ABSOLUTE)
+            set(_katago_bundled_ninja
+                "${_katago_vs_root}/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe")
+            if(EXISTS "${_katago_bundled_ninja}")
+              set(CMAKE_MAKE_PROGRAM "${_katago_bundled_ninja}" CACHE FILEPATH "" FORCE)
+              message(STATUS "KataGo: using Ninja bundled with Visual Studio")
+            endif()
+          endif()
+        endif()
+      endif()
+    endif()
+  endif()
+endif()
+
 if(USE_BACKEND STREQUAL "METAL")
   project(katago LANGUAGES CXX Swift)
 elseif(USE_BACKEND STREQUAL "ROCM")
@@ -541,6 +615,18 @@ elseif(USE_BACKEND STREQUAL "ROCM")
   project(katago LANGUAGES C CXX HIP)
 else()
   project(katago)
+endif()
+
+# See the WINML bootstrap block above: these carry the auto-detected toolchain's header and
+# library search paths into the generated build files, so building later from a plain shell works.
+# No-op for every other backend (the variables are only set by that block).
+if(_katago_msvc_incflags)
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}${_katago_msvc_incflags}" CACHE STRING "" FORCE)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}${_katago_msvc_incflags}" CACHE STRING "" FORCE)
+  foreach(_lk EXE SHARED MODULE)
+    set(CMAKE_${_lk}_LINKER_FLAGS "${CMAKE_${_lk}_LINKER_FLAGS}${_katago_msvc_libflags}"
+        CACHE STRING "" FORCE)
+  endforeach()
 endif()
 
 set(CMAKE_CXX_STANDARD 17)
